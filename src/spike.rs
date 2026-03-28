@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use tracing::info;
 
 use crate::bridge::{self, BridgeCandidate, BridgedEndpoint};
+use crate::commissioner::{commission_with_chip_tool, ChipToolCommissionRequest};
 use crate::config::{MatterConfig, MatterRole};
 use crate::fabric_store::{CommissionedNode, FabricStore};
 use crate::homecore::HomecorePublisher;
@@ -26,6 +27,7 @@ pub struct SpikeRuntime {
     backup_dir: PathBuf,
     fabric_store: FabricStore,
     bridge_cfg: crate::config::BridgeConfig,
+    commissioner_cfg: crate::config::CommissionerConfig,
     security_cfg: crate::config::SecurityConfig,
     commissioned_nodes: Vec<CommissionedNode>,
     store_warning: Option<String>,
@@ -84,6 +86,7 @@ impl SpikeRuntime {
             backup_dir,
             fabric_store,
             bridge_cfg: cfg.matter.bridge.clone(),
+            commissioner_cfg: cfg.matter.commissioner.clone(),
             security_cfg: cfg.matter.security.clone(),
             commissioned_nodes: load.nodes,
             store_warning: load.warning,
@@ -470,7 +473,7 @@ impl SpikeRuntime {
                         }
                     });
 
-                if selected_discovery.is_none() && !allow_simulated {
+                if selected_discovery.is_none() && self.enabled && !allow_simulated {
                     self.last_error = Some(
                         "commission blocked: no commissionable Matter device discovered"
                             .to_string(),
@@ -558,6 +561,29 @@ impl SpikeRuntime {
                         "selected_discovery": selected_discovery,
                     }));
 
+                    let mut external_commission = None;
+                    if !self.enabled {
+                        let backend = self.commissioner_cfg.backend.trim().to_ascii_lowercase();
+                        if backend == "chip-tool" {
+                            let node_numeric_id = numeric_commissioner_node_id(&node_id);
+                            let details = commission_with_chip_tool(&ChipToolCommissionRequest {
+                                binary: self.commissioner_cfg.binary.as_str(),
+                                timeout_secs: self.commissioner_cfg.timeout_secs,
+                                node_numeric_id,
+                                pairing_code: pairing_code.as_deref(),
+                                passcode,
+                                discriminator,
+                            })
+                            .await?;
+                            external_commission = Some(details);
+                        } else if backend != "spike" {
+                            anyhow::bail!(
+                                "unsupported commissioner backend '{}'; expected chip-tool or spike",
+                                self.commissioner_cfg.backend
+                            );
+                        }
+                    }
+
                     if self.enabled {
                         self.publish_bootstrap(publisher).await?;
                     }
@@ -585,6 +611,7 @@ impl SpikeRuntime {
                             "timeout_ms": timeout_ms,
                             "allow_simulated": allow_simulated,
                             "selected_discovery": selected_discovery,
+                            "external_commission": external_commission,
                         }
                     });
                     publisher.publish_event("plugin_metrics", &payload).await?;
@@ -1230,6 +1257,17 @@ impl SpikeRuntime {
 
         Ok(())
     }
+}
+
+fn numeric_commissioner_node_id(node_id: &str) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in node_id.as_bytes() {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+
+    // Keep IDs in a practical, positive range for external commissioner tools.
+    (hash % 2_000_000_000).saturating_add(1)
 }
 
 fn command_signature(mapped: &mapper::MappedMatterCommand) -> String {

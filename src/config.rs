@@ -56,6 +56,12 @@ pub struct CommissionerConfig {
     pub vendor_id: u16,
     #[serde(default = "default_product_id")]
     pub product_id: u16,
+    #[serde(default = "default_commissioner_backend")]
+    pub backend: String,
+    #[serde(default = "default_commissioner_binary")]
+    pub binary: String,
+    #[serde(default = "default_commissioner_timeout_secs")]
+    pub timeout_secs: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -135,6 +141,18 @@ fn default_product_id() -> u16 {
     0x8000
 }
 
+fn default_commissioner_backend() -> String {
+    "chip-tool".into()
+}
+
+fn default_commissioner_binary() -> String {
+    "chip-tool".into()
+}
+
+fn default_commissioner_timeout_secs() -> u64 {
+    90
+}
+
 fn default_spike_node_id() -> String {
     "matter_spike_node_1".into()
 }
@@ -186,6 +204,9 @@ impl Default for CommissionerConfig {
         Self {
             vendor_id: default_vendor_id(),
             product_id: default_product_id(),
+            backend: default_commissioner_backend(),
+            binary: default_commissioner_binary(),
+            timeout_secs: default_commissioner_timeout_secs(),
         }
     }
 }

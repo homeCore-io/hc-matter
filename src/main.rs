@@ -1,4 +1,5 @@
 mod bridge;
+mod commissioner;
 mod config;
 mod fabric_store;
 mod homecore;

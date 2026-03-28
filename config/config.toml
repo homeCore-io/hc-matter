@@ -18,6 +18,17 @@ heartbeat_secs = 30
 vendor_id = 65521
 product_id = 32768
 
+# backend:
+# - chip-tool: use external CHIP Tool for real commissioning operations
+# - spike: legacy simulated commissioning path
+backend = "chip-tool"
+
+# Binary used when backend = "chip-tool"
+binary = "chip-tool"
+
+# Timeout for external commission command execution
+timeout_secs = 90
+
 [matter.network]
 # interface = "eth0"
 
@@ -46,7 +57,7 @@ backup_dir = "backups"
 
 [matter.spike]
 # MAT-003: set true to run commissioning/read/toggle/bridge spike behavior.
-enabled = true
+enabled = false
 test_node_id = "matter_spike_node_1"
 bridge_endpoint_id = "matter_spike_bridge_1"
 advertise_bridge_endpoint = true
