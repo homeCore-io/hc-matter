@@ -37,6 +37,8 @@ pub struct MatterRuntimeConfig {
     #[serde(default)]
     pub bridge: BridgeConfig,
     #[serde(default)]
+    pub security: SecurityConfig,
+    #[serde(default)]
     pub spike: SpikeConfig,
 }
 
@@ -88,6 +90,23 @@ pub struct BridgeConfig {
     pub endpoint_id_salt: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct SecurityConfig {
+    #[serde(default)]
+    pub key_provider: KeyProvider,
+    #[serde(default = "default_key_env_var")]
+    pub key_env_var: String,
+    #[serde(default = "default_backup_dir")]
+    pub backup_dir: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KeyProvider {
+    Plaintext,
+    Env,
+}
+
 fn default_host() -> String {
     "127.0.0.1".into()
 }
@@ -128,6 +147,14 @@ fn default_endpoint_id_salt() -> String {
     "plugin.matter".into()
 }
 
+fn default_key_env_var() -> String {
+    "HC_MATTER_STORE_KEY".into()
+}
+
+fn default_backup_dir() -> String {
+    "backups".into()
+}
+
 impl Default for HomecoreConfig {
     fn default() -> Self {
         Self {
@@ -148,6 +175,7 @@ impl Default for MatterRuntimeConfig {
             commissioner: CommissionerConfig::default(),
             network: NetworkConfig::default(),
             bridge: BridgeConfig::default(),
+            security: SecurityConfig::default(),
             spike: SpikeConfig::default(),
         }
     }
@@ -191,6 +219,22 @@ impl Default for BridgeConfig {
     }
 }
 
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            key_provider: KeyProvider::Plaintext,
+            key_env_var: default_key_env_var(),
+            backup_dir: default_backup_dir(),
+        }
+    }
+}
+
+impl Default for KeyProvider {
+    fn default() -> Self {
+        Self::Plaintext
+    }
+}
+
 impl Default for MatterConfig {
     fn default() -> Self {
         Self {
@@ -209,6 +253,18 @@ impl MatterConfig {
 
     pub fn resolve_storage_dir(&self, config_path: &str) -> PathBuf {
         let candidate = PathBuf::from(&self.matter.storage_dir);
+        if candidate.is_absolute() {
+            return candidate;
+        }
+
+        let config_dir = Path::new(config_path)
+            .parent()
+            .unwrap_or_else(|| Path::new("."));
+        config_dir.join(candidate)
+    }
+
+    pub fn resolve_backup_dir(&self, config_path: &str) -> PathBuf {
+        let candidate = PathBuf::from(&self.matter.security.backup_dir);
         if candidate.is_absolute() {
             return candidate;
         }

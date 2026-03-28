@@ -1,12 +1,19 @@
 use anyhow::{Context, Result};
+use base64::Engine;
+use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, OsRng};
+use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::Digest;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::config::{KeyProvider, SecurityConfig};
+
 const STORE_VERSION: u32 = 1;
 const STORE_FILE: &str = "fabric_store.json";
+const STORE_ALGORITHM: &str = "chacha20poly1305";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommissionedNode {
@@ -24,6 +31,14 @@ struct FabricStoreDoc {
     version: u32,
     #[serde(default)]
     nodes: Vec<CommissionedNode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct EncryptedFabricStoreDoc {
+    version: u32,
+    algorithm: String,
+    nonce_b64: String,
+    ciphertext_b64: String,
 }
 
 impl Default for FabricStoreDoc {
@@ -44,12 +59,14 @@ pub struct LoadResult {
 #[derive(Debug, Clone)]
 pub struct FabricStore {
     path: PathBuf,
+    security: SecurityConfig,
 }
 
 impl FabricStore {
-    pub fn new(storage_dir: &Path) -> Self {
+    pub fn new(storage_dir: &Path, security: SecurityConfig) -> Self {
         Self {
             path: storage_dir.join(STORE_FILE),
+            security,
         }
     }
 
@@ -63,6 +80,27 @@ impl FabricStore {
 
         let raw = std::fs::read(&self.path)
             .with_context(|| format!("reading fabric store: {}", self.path.display()))?;
+
+        if let Ok(doc) = serde_json::from_slice::<EncryptedFabricStoreDoc>(&raw) {
+            let decrypted = self.decrypt_doc(&doc)?;
+            let doc: FabricStoreDoc = serde_json::from_slice(&decrypted).with_context(|| {
+                format!(
+                    "parsing decrypted fabric store: {}",
+                    self.path.display()
+                )
+            })?;
+
+            let original_len = doc.nodes.len();
+            let mut warning = None;
+            let nodes = normalize_nodes(doc.nodes);
+
+            if nodes.len() != original_len {
+                warning = Some("fabric store had duplicate node entries; normalized on load".to_string());
+                self.save_nodes(&nodes)?;
+            }
+
+            return Ok(LoadResult { nodes, warning });
+        }
 
         match serde_json::from_slice::<FabricStoreDoc>(&raw) {
             Ok(doc) => {
@@ -168,14 +206,58 @@ impl FabricStore {
         )
     }
 
+    pub fn export_backup(&self, backup_dir: &Path) -> Result<PathBuf> {
+        std::fs::create_dir_all(backup_dir)
+            .with_context(|| format!("creating backup dir: {}", backup_dir.display()))?;
+
+        let ts = unix_now();
+        let backup_path = backup_dir.join(format!("fabric_store.{ts}.bak.json"));
+
+        if self.path.exists() {
+            let raw = std::fs::read(&self.path)
+                .with_context(|| format!("reading fabric store for backup: {}", self.path.display()))?;
+            std::fs::write(&backup_path, raw)
+                .with_context(|| format!("writing fabric backup: {}", backup_path.display()))?;
+        } else {
+            let doc = FabricStoreDoc::default();
+            std::fs::write(&backup_path, serde_json::to_vec_pretty(&doc)?)
+                .with_context(|| format!("writing empty fabric backup: {}", backup_path.display()))?;
+        }
+
+        Ok(backup_path)
+    }
+
     fn save_nodes(&self, nodes: &[CommissionedNode]) -> Result<()> {
         let doc = FabricStoreDoc {
             version: STORE_VERSION,
             nodes: nodes.to_vec(),
         };
 
+        let plain = serde_json::to_vec_pretty(&doc)?;
+        if let Some(key) = self.resolve_key()? {
+            let cipher = ChaCha20Poly1305::new((&key).into());
+            let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+            let ciphertext = cipher
+                .encrypt(&nonce, plain.as_ref())
+                .map_err(|_| anyhow::anyhow!("encrypting fabric store failed"))?;
+
+            let encrypted = EncryptedFabricStoreDoc {
+                version: STORE_VERSION,
+                algorithm: STORE_ALGORITHM.to_string(),
+                nonce_b64: base64::engine::general_purpose::STANDARD.encode(nonce.as_slice()),
+                ciphertext_b64: base64::engine::general_purpose::STANDARD.encode(ciphertext),
+            };
+
+            return self.write_store_bytes(serde_json::to_vec_pretty(&encrypted)?);
+        }
+
+        self.write_store_bytes(plain)
+    }
+
+    fn write_store_bytes(&self, bytes: Vec<u8>) -> Result<()> {
+
         let tmp_path = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp_path, serde_json::to_vec_pretty(&doc)?)
+        std::fs::write(&tmp_path, bytes)
             .with_context(|| format!("writing fabric store temp file: {}", tmp_path.display()))?;
         std::fs::rename(&tmp_path, &self.path).with_context(|| {
             format!(
@@ -186,6 +268,62 @@ impl FabricStore {
         })?;
 
         Ok(())
+    }
+
+    fn resolve_key(&self) -> Result<Option<[u8; 32]>> {
+        match self.security.key_provider {
+            KeyProvider::Plaintext => Ok(None),
+            KeyProvider::Env => {
+                let secret = std::env::var(&self.security.key_env_var).with_context(|| {
+                    format!(
+                        "security.key_provider=env requires env var {}",
+                        self.security.key_env_var
+                    )
+                })?;
+
+                if secret.trim().is_empty() {
+                    anyhow::bail!(
+                        "env var {} is empty; cannot derive fabric store key",
+                        self.security.key_env_var
+                    );
+                }
+
+                let digest = sha2::Sha256::digest(secret.as_bytes());
+                let mut key = [0u8; 32];
+                key.copy_from_slice(&digest);
+                Ok(Some(key))
+            }
+        }
+    }
+
+    fn decrypt_doc(&self, doc: &EncryptedFabricStoreDoc) -> Result<Vec<u8>> {
+        if !doc.algorithm.eq_ignore_ascii_case(STORE_ALGORITHM) {
+            anyhow::bail!("unsupported encrypted fabric store algorithm: {}", doc.algorithm);
+        }
+
+        let key = self.resolve_key()?.with_context(|| {
+            "encrypted fabric store detected but no key provider is configured"
+        })?;
+
+        let nonce_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&doc.nonce_b64)
+            .context("decoding encrypted fabric store nonce")?;
+        if nonce_bytes.len() != 12 {
+            anyhow::bail!(
+                "encrypted fabric store nonce length is invalid: expected 12 got {}",
+                nonce_bytes.len()
+            );
+        }
+
+        let ciphertext = base64::engine::general_purpose::STANDARD
+            .decode(&doc.ciphertext_b64)
+            .context("decoding encrypted fabric store ciphertext")?;
+
+        let cipher = ChaCha20Poly1305::new((&key).into());
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        cipher
+            .decrypt(nonce, ciphertext.as_ref())
+            .map_err(|_| anyhow::anyhow!("decrypting encrypted fabric store payload failed"))
     }
 
     fn corrupt_path(&self) -> PathBuf {
@@ -226,12 +364,16 @@ mod tests {
         std::env::temp_dir().join(format!("hc-matter-{name}-{ts}"))
     }
 
+    fn plaintext_security() -> SecurityConfig {
+        SecurityConfig::default()
+    }
+
     #[test]
     fn upsert_persists_nodes() {
         let dir = temp_storage_dir("upsert");
         std::fs::create_dir_all(&dir).unwrap();
 
-        let store = FabricStore::new(&dir);
+        let store = FabricStore::new(&dir, plaintext_security());
         let nodes = store
             .upsert_node("matter_spike_node_1", 1, &["OnOff", "LevelControl"])
             .unwrap();
@@ -251,7 +393,7 @@ mod tests {
         let dir = temp_storage_dir("no-dup");
         std::fs::create_dir_all(&dir).unwrap();
 
-        let store = FabricStore::new(&dir);
+        let store = FabricStore::new(&dir, plaintext_security());
         store
             .upsert_node("matter_spike_node_1", 1, &["OnOff", "LevelControl"])
             .unwrap();
@@ -275,7 +417,7 @@ mod tests {
         let store_path = dir.join(STORE_FILE);
         std::fs::write(&store_path, b"not-json").unwrap();
 
-        let store = FabricStore::new(&dir);
+        let store = FabricStore::new(&dir, plaintext_security());
         let loaded = store.load_or_recover().unwrap();
 
         assert!(loaded.nodes.is_empty());
@@ -300,7 +442,7 @@ mod tests {
         let dir = temp_storage_dir("remove");
         std::fs::create_dir_all(&dir).unwrap();
 
-        let store = FabricStore::new(&dir);
+        let store = FabricStore::new(&dir, plaintext_security());
         store
             .upsert_node("matter_spike_node_1", 1, &["OnOff", "LevelControl"])
             .unwrap();
@@ -312,6 +454,53 @@ mod tests {
         assert!(removed);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].node_id, "matter_spike_node_2");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn encrypted_store_round_trip_with_env_key() {
+        let dir = temp_storage_dir("enc");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let key_name = format!("HC_MATTER_STORE_KEY_TEST_{}", unix_now());
+        std::env::set_var(&key_name, "unit-test-secret");
+
+        let security = SecurityConfig {
+            key_provider: KeyProvider::Env,
+            key_env_var: key_name.clone(),
+            backup_dir: "backups".to_string(),
+        };
+
+        let store = FabricStore::new(&dir, security);
+        store
+            .upsert_node("matter_spike_node_1", 1, &["OnOff", "LevelControl"])
+            .unwrap();
+
+        let raw = std::fs::read(dir.join(STORE_FILE)).unwrap();
+        let raw_str = String::from_utf8(raw).unwrap();
+        assert!(raw_str.contains("ciphertext_b64"));
+
+        let loaded = store.load_or_recover().unwrap();
+        assert_eq!(loaded.nodes.len(), 1);
+
+        std::env::remove_var(key_name);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn export_backup_writes_file() {
+        let dir = temp_storage_dir("backup");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let store = FabricStore::new(&dir, plaintext_security());
+        store
+            .upsert_node("matter_spike_node_1", 1, &["OnOff", "LevelControl"])
+            .unwrap();
+
+        let backup_dir = dir.join("backups");
+        let backup_path = store.export_backup(&backup_dir).unwrap();
+        assert!(backup_path.exists());
 
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -263,10 +263,14 @@ async fn shutdown_signal() {
 
 fn ensure_storage_layout(cfg: &MatterConfig, config_path: &str) -> Result<()> {
     let storage_dir = cfg.resolve_storage_dir(config_path);
+    let backup_dir = cfg.resolve_backup_dir(config_path);
     std::fs::create_dir_all(&storage_dir)
         .with_context(|| format!("creating storage dir: {}", storage_dir.display()))?;
+    std::fs::create_dir_all(&backup_dir)
+        .with_context(|| format!("creating backup dir: {}", backup_dir.display()))?;
 
     set_strict_permissions(&storage_dir)?;
+    set_strict_permissions(&backup_dir)?;
 
     Ok(())
 }

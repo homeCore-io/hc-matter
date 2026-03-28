@@ -31,6 +31,19 @@ product_id = 32768
 # Salt for deterministic endpoint ID derivation.
 endpoint_id_salt = "plugin.matter"
 
+[matter.security]
+# plaintext | env
+# - plaintext: writes fabric_store.json unencrypted (legacy/dev behavior)
+# - env: encrypts fabric_store.json using HC_MATTER_STORE_KEY (or key_env_var)
+key_provider = "plaintext"
+
+# Env var name used when key_provider = "env".
+key_env_var = "HC_MATTER_STORE_KEY"
+
+# Relative to config dir unless absolute. Trigger export with:
+# {"action":"backup_fabric"} to matter_controller cmd.
+backup_dir = "backups"
+
 [matter.spike]
 # MAT-003: set true to run commissioning/read/toggle/bridge spike behavior.
 enabled = true

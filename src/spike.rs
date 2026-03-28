@@ -23,8 +23,10 @@ pub struct SpikeRuntime {
     advertise_bridge_endpoint: bool,
     network_interface: Option<String>,
     storage_dir: PathBuf,
+    backup_dir: PathBuf,
     fabric_store: FabricStore,
     bridge_cfg: crate::config::BridgeConfig,
+    security_cfg: crate::config::SecurityConfig,
     commissioned_nodes: Vec<CommissionedNode>,
     store_warning: Option<String>,
     test_node_class: MatterDeviceClass,
@@ -64,7 +66,8 @@ impl SpikeRuntime {
         publisher: &HomecorePublisher,
     ) -> Result<Self> {
         let storage_dir = cfg.resolve_storage_dir(config_path);
-        let fabric_store = FabricStore::new(&storage_dir);
+        let backup_dir = cfg.resolve_backup_dir(config_path);
+        let fabric_store = FabricStore::new(&storage_dir, cfg.matter.security.clone());
         let load = fabric_store.load_or_recover()?;
 
         let mut runtime = Self {
@@ -75,8 +78,10 @@ impl SpikeRuntime {
             advertise_bridge_endpoint: cfg.matter.spike.advertise_bridge_endpoint,
             network_interface: cfg.matter.network.interface.clone(),
             storage_dir,
+            backup_dir,
             fabric_store,
             bridge_cfg: cfg.matter.bridge.clone(),
+            security_cfg: cfg.matter.security.clone(),
             commissioned_nodes: load.nodes,
             store_warning: load.warning,
             test_node_class: MatterDeviceClass::DimmableLight,
@@ -162,6 +167,11 @@ impl SpikeRuntime {
             "fabric_store": {
                 "node_count": self.commissioned_nodes.len(),
                 "warning": self.store_warning,
+                "protected": !matches!(self.security_cfg.key_provider, crate::config::KeyProvider::Plaintext),
+            },
+            "security": {
+                "key_provider": self.security_provider_name(),
+                "backup_dir": self.backup_dir,
             },
             "mapping": {
                 "test_node_class": format!("{:?}", self.test_node_class),
@@ -466,6 +476,15 @@ impl SpikeRuntime {
                 });
                 publisher.publish_event("plugin_metrics", &payload).await?;
             }
+            "backup_fabric" | "export_fabric" => {
+                let backup_path = self.fabric_store.export_backup(&self.backup_dir)?;
+                let payload = json!({
+                    "phase": "fabric_backup",
+                    "result": "ok",
+                    "path": backup_path,
+                });
+                publisher.publish_event("plugin_metrics", &payload).await?;
+            }
             "toggle" => {
                 self.on = !self.on;
                 self.publish_mapped_node_state(publisher).await?;
@@ -528,6 +547,13 @@ impl SpikeRuntime {
                 "advertised": self.advertise_bridge_endpoint,
             }
         })
+    }
+
+    fn security_provider_name(&self) -> &'static str {
+        match self.security_cfg.key_provider {
+            crate::config::KeyProvider::Plaintext => "plaintext",
+            crate::config::KeyProvider::Env => "env",
+        }
     }
 
     fn current_homecore_state(&self) -> serde_json::Value {
