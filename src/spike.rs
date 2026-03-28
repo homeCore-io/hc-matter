@@ -1,11 +1,13 @@
 use anyhow::Result;
 use serde_json::json;
+use std::path::PathBuf;
 use tracing::info;
 
 use crate::config::{MatterConfig, MatterRole};
 use crate::homecore::HomecorePublisher;
 
 // Force linkage against the selected MAT-003 crate from the rs-matter project.
+#[cfg(feature = "matter-stack")]
 use matter_rs as _;
 
 pub struct SpikeRuntime {
@@ -14,30 +16,24 @@ pub struct SpikeRuntime {
     test_node_id: String,
     bridge_endpoint_id: String,
     advertise_bridge_endpoint: bool,
+    storage_dir: PathBuf,
     on: bool,
     brightness_pct: u8,
 }
 
 impl SpikeRuntime {
-    pub fn controller_state(&self) -> serde_json::Value {
-        json!({
-            "spike_enabled": self.enabled,
-            "node_id": self.test_node_id,
-            "bridge_endpoint_id": self.bridge_endpoint_id,
-            "commissioned": true,
-            "on": self.on,
-            "brightness_pct": self.brightness_pct,
-            "role": format!("{:?}", self.role).to_lowercase(),
-        })
-    }
-
-    pub async fn new(cfg: &MatterConfig, publisher: &HomecorePublisher) -> Result<Self> {
+    pub async fn new(
+        cfg: &MatterConfig,
+        config_path: &str,
+        publisher: &HomecorePublisher,
+    ) -> Result<Self> {
         let runtime = Self {
             enabled: cfg.matter.spike.enabled,
             role: cfg.matter.role.clone(),
             test_node_id: cfg.matter.spike.test_node_id.clone(),
             bridge_endpoint_id: cfg.matter.spike.bridge_endpoint_id.clone(),
             advertise_bridge_endpoint: cfg.matter.spike.advertise_bridge_endpoint,
+            storage_dir: cfg.resolve_storage_dir(config_path),
             on: false,
             brightness_pct: 25,
         };
@@ -47,11 +43,25 @@ impl SpikeRuntime {
         }
 
         runtime.publish_bootstrap(publisher).await?;
+        runtime.persist_snapshot()?;
         Ok(runtime)
     }
 
     pub fn enabled(&self) -> bool {
         self.enabled
+    }
+
+    pub fn controller_state(&self) -> serde_json::Value {
+        json!({
+            "spike_enabled": self.enabled,
+            "node_id": self.test_node_id,
+            "bridge_endpoint_id": self.bridge_endpoint_id,
+            "commissioned": true,
+            "on": self.on,
+            "brightness_pct": self.brightness_pct,
+            "role": format!("{:?}", self.role).to_lowercase(),
+            "interview": self.interview_payload(),
+        })
     }
 
     pub async fn on_heartbeat(&self, publisher: &HomecorePublisher) -> Result<()> {
@@ -66,8 +76,10 @@ impl SpikeRuntime {
             "on": self.on,
             "brightness_pct": self.brightness_pct,
             "role": format!("{:?}", self.role).to_lowercase(),
+            "interview": self.interview_payload(),
         });
-        publisher.publish_event("plugin_metrics", &payload).await
+        publisher.publish_event("plugin_metrics", &payload).await?;
+        self.persist_snapshot()
     }
 
     pub async fn handle_command(
@@ -113,6 +125,7 @@ impl SpikeRuntime {
             "brightness_pct": self.brightness_pct,
         });
         publisher.publish_event("plugin_metrics", &payload).await?;
+        self.persist_snapshot()?;
 
         Ok(())
     }
@@ -143,6 +156,15 @@ impl SpikeRuntime {
                     "node_id": self.test_node_id,
                     "on": self.on,
                     "brightness_pct": self.brightness_pct,
+                    "interview": self.interview_payload(),
+                });
+                publisher.publish_event("plugin_metrics", &payload).await?;
+            }
+            "interview" => {
+                let payload = json!({
+                    "phase": "interview",
+                    "node_id": self.test_node_id,
+                    "details": self.interview_payload(),
                 });
                 publisher.publish_event("plugin_metrics", &payload).await?;
             }
@@ -188,7 +210,32 @@ impl SpikeRuntime {
         publisher
             .publish_state("matter_controller", &self.controller_state())
             .await?;
+        self.persist_snapshot()?;
 
+        Ok(())
+    }
+
+    fn interview_payload(&self) -> serde_json::Value {
+        json!({
+            "endpoint": 1,
+            "clusters": ["OnOff", "LevelControl"],
+            "bridge_endpoint": {
+                "id": self.bridge_endpoint_id,
+                "advertised": self.advertise_bridge_endpoint,
+            }
+        })
+    }
+
+    fn persist_snapshot(&self) -> Result<()> {
+        let snapshot_path = self.storage_dir.join("spike_state.json");
+        let payload = json!({
+            "node_id": self.test_node_id,
+            "bridge_endpoint_id": self.bridge_endpoint_id,
+            "on": self.on,
+            "brightness_pct": self.brightness_pct,
+            "controller": self.controller_state(),
+        });
+        std::fs::write(&snapshot_path, serde_json::to_vec_pretty(&payload)?)?;
         Ok(())
     }
 

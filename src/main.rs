@@ -41,7 +41,7 @@ async fn main() {
 
     for attempt in 1..=MAX_ATTEMPTS {
         info!(attempt, max = MAX_ATTEMPTS, "Starting hc-matter plugin");
-        match try_start(&cfg).await {
+        match try_start(&cfg, &config_path).await {
             Ok(()) => return,
             Err(e) => {
                 if attempt < MAX_ATTEMPTS {
@@ -91,7 +91,7 @@ fn init_logging(config_path: &str) -> tracing_appender::non_blocking::WorkerGuar
     guard
 }
 
-async fn try_start(cfg: &MatterConfig) -> Result<()> {
+async fn try_start(cfg: &MatterConfig, config_path: &str) -> Result<()> {
     info!(
         role = ?cfg.matter.role,
         storage_dir = %cfg.matter.storage_dir,
@@ -109,7 +109,7 @@ async fn try_start(cfg: &MatterConfig) -> Result<()> {
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<(String, serde_json::Value)>(64);
     let mut mqtt_task = tokio::spawn(hc_client.run(cmd_tx));
 
-    let mut spike_runtime = SpikeRuntime::new(cfg, &publisher)
+    let mut spike_runtime = SpikeRuntime::new(cfg, config_path, &publisher)
         .await
         .context("initializing MAT-003 spike runtime")?;
 
