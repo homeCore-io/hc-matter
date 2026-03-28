@@ -35,6 +35,7 @@ pub struct SpikeRuntime {
     temperature_sensor_id: String,
     stack_probe: Option<serde_json::Value>,
     last_discovery: Option<serde_json::Value>,
+    last_commission_request: Option<serde_json::Value>,
     on: bool,
     brightness_pct: u8,
     contact_open: bool,
@@ -90,6 +91,7 @@ impl SpikeRuntime {
             temperature_sensor_id: "matter_spike_temp_1".to_string(),
             stack_probe: None,
             last_discovery: None,
+            last_commission_request: None,
             on: false,
             brightness_pct: 25,
             contact_open: false,
@@ -209,6 +211,7 @@ impl SpikeRuntime {
             },
             "matter_stack": self.stack_probe,
             "last_discovery": self.last_discovery,
+            "last_commission_request": self.last_commission_request,
         })
     }
 
@@ -356,6 +359,31 @@ impl SpikeRuntime {
 
         match action {
             "commission" => {
+                let pairing_code = cmd
+                    .get("pairing_code")
+                    .or_else(|| cmd.get("setup_code"))
+                    .or_else(|| cmd.get("manual_code"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                let discriminator = cmd
+                    .get("discriminator")
+                    .or_else(|| cmd.get("short_discriminator"))
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v.min(u16::MAX as u64) as u16);
+
+                let passcode = cmd
+                    .get("passcode")
+                    .or_else(|| cmd.get("pin"))
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v.min(u32::MAX as u64) as u32);
+
+                self.last_commission_request = Some(json!({
+                    "pairing_code_present": pairing_code.is_some(),
+                    "discriminator": discriminator,
+                    "passcode_present": passcode.is_some(),
+                }));
+
                 self.publish_bootstrap(publisher).await?;
                 self.upsert_commissioned_node()?;
                 let payload = json!({
@@ -363,6 +391,11 @@ impl SpikeRuntime {
                     "node_id": self.test_node_id,
                     "result": "ok",
                     "persisted_nodes": self.commissioned_nodes.len(),
+                    "commissioning": {
+                        "pairing_code_present": pairing_code.is_some(),
+                        "discriminator": discriminator,
+                        "passcode_present": passcode.is_some(),
+                    }
                 });
                 publisher.publish_event("plugin_metrics", &payload).await?;
             }
