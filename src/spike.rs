@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use tracing::info;
 
 use crate::config::{MatterConfig, MatterRole};
+use crate::fabric_store::{CommissionedNode, FabricStore};
 use crate::homecore::HomecorePublisher;
 
 // Force linkage against the selected MAT-003 crate from the rs-matter project.
@@ -18,6 +19,9 @@ pub struct SpikeRuntime {
     advertise_bridge_endpoint: bool,
     network_interface: Option<String>,
     storage_dir: PathBuf,
+    fabric_store: FabricStore,
+    commissioned_nodes: Vec<CommissionedNode>,
+    store_warning: Option<String>,
     stack_probe: Option<serde_json::Value>,
     last_discovery: Option<serde_json::Value>,
     on: bool,
@@ -30,6 +34,10 @@ impl SpikeRuntime {
         config_path: &str,
         publisher: &HomecorePublisher,
     ) -> Result<Self> {
+        let storage_dir = cfg.resolve_storage_dir(config_path);
+        let fabric_store = FabricStore::new(&storage_dir);
+        let load = fabric_store.load_or_recover()?;
+
         let runtime = Self {
             enabled: cfg.matter.spike.enabled,
             role: cfg.matter.role.clone(),
@@ -37,12 +45,37 @@ impl SpikeRuntime {
             bridge_endpoint_id: cfg.matter.spike.bridge_endpoint_id.clone(),
             advertise_bridge_endpoint: cfg.matter.spike.advertise_bridge_endpoint,
             network_interface: cfg.matter.network.interface.clone(),
-            storage_dir: cfg.resolve_storage_dir(config_path),
+            storage_dir,
+            fabric_store,
+            commissioned_nodes: load.nodes,
+            store_warning: load.warning,
             stack_probe: None,
             last_discovery: None,
             on: false,
             brightness_pct: 25,
         };
+
+        if let Some(warning) = &runtime.store_warning {
+            publisher
+                .publish_event(
+                    "plugin_metrics",
+                    &json!({
+                        "phase": "fabric_store_recovery",
+                        "warning": warning,
+                    }),
+                )
+                .await?;
+        }
+
+        publisher
+            .publish_event(
+                "plugin_metrics",
+                &json!({
+                    "phase": "fabric_store_loaded",
+                    "nodes": runtime.commissioned_nodes.len(),
+                }),
+            )
+            .await?;
 
         if !runtime.enabled {
             return Ok(runtime);
@@ -71,6 +104,11 @@ impl SpikeRuntime {
             "brightness_pct": self.brightness_pct,
             "role": format!("{:?}", self.role).to_lowercase(),
             "interview": self.interview_payload(),
+            "commissioned_nodes": FabricStore::nodes_to_json(&self.commissioned_nodes),
+            "fabric_store": {
+                "node_count": self.commissioned_nodes.len(),
+                "warning": self.store_warning,
+            },
             "matter_stack": self.stack_probe,
             "last_discovery": self.last_discovery,
         })
@@ -155,10 +193,12 @@ impl SpikeRuntime {
         match action {
             "commission" => {
                 self.publish_bootstrap(publisher).await?;
+                self.upsert_commissioned_node()?;
                 let payload = json!({
                     "phase": "commission",
                     "node_id": self.test_node_id,
                     "result": "ok",
+                    "persisted_nodes": self.commissioned_nodes.len(),
                 });
                 publisher.publish_event("plugin_metrics", &payload).await?;
             }
@@ -274,9 +314,21 @@ impl SpikeRuntime {
             "bridge_endpoint_id": self.bridge_endpoint_id,
             "on": self.on,
             "brightness_pct": self.brightness_pct,
+            "commissioned_nodes": FabricStore::nodes_to_json(&self.commissioned_nodes),
+            "fabric_store_warning": self.store_warning,
             "controller": self.controller_state(),
         });
         std::fs::write(&snapshot_path, serde_json::to_vec_pretty(&payload)?)?;
+        Ok(())
+    }
+
+    fn upsert_commissioned_node(&mut self) -> Result<()> {
+        self.commissioned_nodes = self.fabric_store.upsert_node(
+            &self.test_node_id,
+            1,
+            &["OnOff", "LevelControl"],
+        )?;
+        self.store_warning = None;
         Ok(())
     }
 

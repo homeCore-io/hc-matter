@@ -1,4 +1,5 @@
 mod config;
+mod fabric_store;
 mod homecore;
 mod matter_stack;
 mod spike;
