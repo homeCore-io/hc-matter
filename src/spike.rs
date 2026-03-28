@@ -486,6 +486,46 @@ impl SpikeRuntime {
             .collect()
     }
 
+    fn bridged_sensor_endpoints(&self) -> Vec<BridgedEndpoint> {
+        self.bridged_endpoints()
+            .into_iter()
+            .filter(|e| {
+                let t = e.candidate.device_type.as_str();
+                t.eq_ignore_ascii_case("contact_sensor")
+                    || t.eq_ignore_ascii_case("motion_sensor")
+                    || t.eq_ignore_ascii_case("temperature_sensor")
+            })
+            .collect()
+    }
+
+    fn sensor_state_for_type(&self, device_type: &str) -> Option<serde_json::Value> {
+        if device_type.eq_ignore_ascii_case("contact_sensor") {
+            let attrs = mapper::synthetic_contact_attributes(self.contact_open);
+            return Some(mapper::map_matter_attributes(
+                MatterDeviceClass::ContactSensor,
+                &attrs,
+            ));
+        }
+
+        if device_type.eq_ignore_ascii_case("motion_sensor") {
+            let attrs = mapper::synthetic_occupancy_attributes(self.occupied);
+            return Some(mapper::map_matter_attributes(
+                MatterDeviceClass::OccupancySensor,
+                &attrs,
+            ));
+        }
+
+        if device_type.eq_ignore_ascii_case("temperature_sensor") {
+            let attrs = mapper::synthetic_temperature_attributes(self.temperature_c);
+            return Some(mapper::map_matter_attributes(
+                MatterDeviceClass::TemperatureMeasurement,
+                &attrs,
+            ));
+        }
+
+        None
+    }
+
     fn bridged_endpoints_json(&self) -> serde_json::Value {
         json!(
             self.bridged_endpoints()
@@ -559,28 +599,13 @@ impl SpikeRuntime {
     }
 
     async fn publish_mapped_sensor_states(&mut self, publisher: &HomecorePublisher) -> Result<()> {
-        let contact_attrs = mapper::synthetic_contact_attributes(self.contact_open);
-        let contact_state = mapper::map_matter_attributes(MatterDeviceClass::ContactSensor, &contact_attrs);
-        let contact_id = self.contact_sensor_id.clone();
-        let _ = self
-            .publish_state_dedup(publisher, &contact_id, &contact_state)
-            .await?;
-
-        let occupancy_attrs = mapper::synthetic_occupancy_attributes(self.occupied);
-        let occupancy_state =
-            mapper::map_matter_attributes(MatterDeviceClass::OccupancySensor, &occupancy_attrs);
-        let occupancy_id = self.occupancy_sensor_id.clone();
-        let _ = self
-            .publish_state_dedup(publisher, &occupancy_id, &occupancy_state)
-            .await?;
-
-        let temp_attrs = mapper::synthetic_temperature_attributes(self.temperature_c);
-        let temp_state =
-            mapper::map_matter_attributes(MatterDeviceClass::TemperatureMeasurement, &temp_attrs);
-        let temp_id = self.temperature_sensor_id.clone();
-        let _ = self
-            .publish_state_dedup(publisher, &temp_id, &temp_state)
-            .await?;
+        for endpoint in self.bridged_sensor_endpoints() {
+            if let Some(state) = self.sensor_state_for_type(&endpoint.candidate.device_type) {
+                let _ = self
+                    .publish_state_dedup(publisher, &endpoint.candidate.device_id, &state)
+                    .await?;
+            }
+        }
 
         Ok(())
     }
@@ -657,31 +682,6 @@ impl SpikeRuntime {
             .await?;
 
         self.publish_bridge_inventory(publisher).await?;
-
-        publisher
-            .register_device_typed(
-                &self.contact_sensor_id,
-                "Matter Spike Contact Sensor",
-                "contact_sensor",
-                None,
-            )
-            .await?;
-        publisher
-            .register_device_typed(
-                &self.occupancy_sensor_id,
-                "Matter Spike Occupancy Sensor",
-                "motion_sensor",
-                None,
-            )
-            .await?;
-        publisher
-            .register_device_typed(
-                &self.temperature_sensor_id,
-                "Matter Spike Temperature Sensor",
-                "temperature_sensor",
-                None,
-            )
-            .await?;
 
         self.publish_mapped_sensor_states(publisher).await?;
 
