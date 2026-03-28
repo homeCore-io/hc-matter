@@ -24,10 +24,16 @@ pub struct SpikeRuntime {
     commissioned_nodes: Vec<CommissionedNode>,
     store_warning: Option<String>,
     test_node_class: MatterDeviceClass,
+    contact_sensor_id: String,
+    occupancy_sensor_id: String,
+    temperature_sensor_id: String,
     stack_probe: Option<serde_json::Value>,
     last_discovery: Option<serde_json::Value>,
     on: bool,
     brightness_pct: u8,
+    contact_open: bool,
+    occupied: bool,
+    temperature_c: f64,
 }
 
 impl SpikeRuntime {
@@ -52,10 +58,16 @@ impl SpikeRuntime {
             commissioned_nodes: load.nodes,
             store_warning: load.warning,
             test_node_class: MatterDeviceClass::DimmableLight,
+            contact_sensor_id: "matter_spike_contact_1".to_string(),
+            occupancy_sensor_id: "matter_spike_occupancy_1".to_string(),
+            temperature_sensor_id: "matter_spike_temp_1".to_string(),
             stack_probe: None,
             last_discovery: None,
             on: false,
             brightness_pct: 25,
+            contact_open: false,
+            occupied: false,
+            temperature_c: 21.5,
         };
 
         if let Some(warning) = &runtime.store_warning {
@@ -114,6 +126,11 @@ impl SpikeRuntime {
             },
             "mapping": {
                 "test_node_class": format!("{:?}", self.test_node_class),
+            },
+            "sensor_snapshot": {
+                "contact_open": self.contact_open,
+                "occupied": self.occupied,
+                "temperature_c": self.temperature_c,
             },
             "matter_stack": self.stack_probe,
             "last_discovery": self.last_discovery,
@@ -278,6 +295,27 @@ impl SpikeRuntime {
                 });
                 publisher.publish_event("plugin_metrics", &payload).await?;
             }
+            "sensor_report" => {
+                if let Some(open) = cmd.get("open").and_then(|v| v.as_bool()) {
+                    self.contact_open = open;
+                }
+                if let Some(occupied) = cmd.get("occupied").and_then(|v| v.as_bool()) {
+                    self.occupied = occupied;
+                }
+                if let Some(temp_c) = cmd.get("temperature_c").and_then(|v| v.as_f64()) {
+                    self.temperature_c = temp_c;
+                }
+
+                self.publish_mapped_sensor_states(publisher).await?;
+
+                let payload = json!({
+                    "phase": "sensor_report_mapped",
+                    "contact_open": self.contact_open,
+                    "occupied": self.occupied,
+                    "temperature_c": self.temperature_c,
+                });
+                publisher.publish_event("plugin_metrics", &payload).await?;
+            }
             "remove_node" | "delete_node" => {
                 let node_id = cmd
                     .get("node_id")
@@ -387,6 +425,28 @@ impl SpikeRuntime {
             .await
     }
 
+    async fn publish_mapped_sensor_states(&self, publisher: &HomecorePublisher) -> Result<()> {
+        let contact_attrs = mapper::synthetic_contact_attributes(self.contact_open);
+        let contact_state = mapper::map_matter_attributes(MatterDeviceClass::ContactSensor, &contact_attrs);
+        publisher.publish_state(&self.contact_sensor_id, &contact_state).await?;
+
+        let occupancy_attrs = mapper::synthetic_occupancy_attributes(self.occupied);
+        let occupancy_state =
+            mapper::map_matter_attributes(MatterDeviceClass::OccupancySensor, &occupancy_attrs);
+        publisher
+            .publish_state(&self.occupancy_sensor_id, &occupancy_state)
+            .await?;
+
+        let temp_attrs = mapper::synthetic_temperature_attributes(self.temperature_c);
+        let temp_state =
+            mapper::map_matter_attributes(MatterDeviceClass::TemperatureMeasurement, &temp_attrs);
+        publisher
+            .publish_state(&self.temperature_sensor_id, &temp_state)
+            .await?;
+
+        Ok(())
+    }
+
     fn persist_snapshot(&self) -> Result<()> {
         let snapshot_path = self.storage_dir.join("spike_state.json");
         let payload = json!({
@@ -465,6 +525,33 @@ impl SpikeRuntime {
                 .publish_event("plugin_metrics", &bridge_payload)
                 .await?;
         }
+
+        publisher
+            .register_device_typed(
+                &self.contact_sensor_id,
+                "Matter Spike Contact Sensor",
+                "contact_sensor",
+                None,
+            )
+            .await?;
+        publisher
+            .register_device_typed(
+                &self.occupancy_sensor_id,
+                "Matter Spike Occupancy Sensor",
+                "motion_sensor",
+                None,
+            )
+            .await?;
+        publisher
+            .register_device_typed(
+                &self.temperature_sensor_id,
+                "Matter Spike Temperature Sensor",
+                "temperature_sensor",
+                None,
+            )
+            .await?;
+
+        self.publish_mapped_sensor_states(publisher).await?;
 
         Ok(())
     }
