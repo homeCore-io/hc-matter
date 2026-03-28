@@ -1,8 +1,11 @@
 use anyhow::{Context, Result};
 use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 use serde_json::Value;
+use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 use crate::config::HomecoreConfig;
@@ -11,6 +14,7 @@ use crate::config::HomecoreConfig;
 pub struct HomecorePublisher {
     client: AsyncClient,
     plugin_id: String,
+    command_subscriptions: Arc<RwLock<HashSet<String>>>,
 }
 
 impl HomecorePublisher {
@@ -25,6 +29,10 @@ impl HomecorePublisher {
 
     pub async fn subscribe_commands(&self, device_id: &str) -> Result<()> {
         let topic = format!("homecore/devices/{device_id}/cmd");
+        {
+            let mut subs = self.command_subscriptions.write().await;
+            subs.insert(topic.clone());
+        }
         self.client
             .subscribe(&topic, QoS::AtLeastOnce)
             .await
@@ -77,6 +85,7 @@ pub struct HomecoreClient {
     client: AsyncClient,
     eventloop: rumqttc::EventLoop,
     plugin_id: String,
+    command_subscriptions: Arc<RwLock<HashSet<String>>>,
 }
 
 impl HomecoreClient {
@@ -90,6 +99,7 @@ impl HomecoreClient {
         }
 
         let (client, eventloop) = AsyncClient::new(opts, 64);
+        let command_subscriptions = Arc::new(RwLock::new(HashSet::new()));
         info!(
             host = %cfg.broker_host,
             port = cfg.broker_port,
@@ -101,6 +111,7 @@ impl HomecoreClient {
             client,
             eventloop,
             plugin_id: cfg.plugin_id.clone(),
+            command_subscriptions,
         })
     }
 
@@ -108,6 +119,7 @@ impl HomecoreClient {
         HomecorePublisher {
             client: self.client.clone(),
             plugin_id: self.plugin_id.clone(),
+            command_subscriptions: Arc::clone(&self.command_subscriptions),
         }
     }
 
@@ -117,6 +129,14 @@ impl HomecoreClient {
             match self.eventloop.poll().await {
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
                     info!("Connected to HomeCore broker");
+                    if let Err(e) = resubscribe_command_topics(
+                        self.client.clone(),
+                        Arc::clone(&self.command_subscriptions),
+                    )
+                    .await
+                    {
+                        warn!(error = %e, "Failed to re-subscribe command topics after reconnect");
+                    }
                 }
                 Ok(Event::Incoming(Packet::Publish(p))) => {
                     let parts: Vec<&str> = p.topic.splitn(4, '/').collect();
@@ -146,4 +166,24 @@ impl HomecoreClient {
             }
         }
     }
+
+}
+
+async fn resubscribe_command_topics(
+    client: AsyncClient,
+    command_subscriptions: Arc<RwLock<HashSet<String>>>,
+) -> Result<()> {
+    let topics: Vec<String> = {
+        let subs = command_subscriptions.read().await;
+        subs.iter().cloned().collect()
+    };
+
+    for topic in topics {
+        client
+            .subscribe(&topic, QoS::AtLeastOnce)
+            .await
+            .with_context(|| format!("re-subscribing to topic: {topic}"))?;
+    }
+
+    Ok(())
 }

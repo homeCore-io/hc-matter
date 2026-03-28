@@ -1,5 +1,6 @@
 use anyhow::Result;
 use serde_json::json;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::info;
 
@@ -34,6 +35,8 @@ pub struct SpikeRuntime {
     contact_open: bool,
     occupied: bool,
     temperature_c: f64,
+    last_published_state: HashMap<String, serde_json::Value>,
+    dedup_suppressed_updates: u64,
 }
 
 impl SpikeRuntime {
@@ -46,7 +49,7 @@ impl SpikeRuntime {
         let fabric_store = FabricStore::new(&storage_dir);
         let load = fabric_store.load_or_recover()?;
 
-        let runtime = Self {
+        let mut runtime = Self {
             enabled: cfg.matter.spike.enabled,
             role: cfg.matter.role.clone(),
             test_node_id: cfg.matter.spike.test_node_id.clone(),
@@ -68,6 +71,8 @@ impl SpikeRuntime {
             contact_open: false,
             occupied: false,
             temperature_c: 21.5,
+            last_published_state: HashMap::new(),
+            dedup_suppressed_updates: 0,
         };
 
         if let Some(warning) = &runtime.store_warning {
@@ -132,6 +137,9 @@ impl SpikeRuntime {
                 "occupied": self.occupied,
                 "temperature_c": self.temperature_c,
             },
+            "dedup": {
+                "suppressed_updates": self.dedup_suppressed_updates,
+            },
             "matter_stack": self.stack_probe,
             "last_discovery": self.last_discovery,
         })
@@ -150,6 +158,7 @@ impl SpikeRuntime {
             "brightness_pct": self.brightness_pct,
             "role": format!("{:?}", self.role).to_lowercase(),
             "interview": self.interview_payload(),
+            "dedup_suppressed_updates": self.dedup_suppressed_updates,
         });
         publisher.publish_event("plugin_metrics", &payload).await?;
         self.persist_snapshot()
@@ -419,32 +428,59 @@ impl SpikeRuntime {
         mapper::map_matter_attributes(self.test_node_class, &matter_attrs)
     }
 
-    async fn publish_mapped_node_state(&self, publisher: &HomecorePublisher) -> Result<()> {
-        publisher
-            .publish_state(&self.test_node_id, &self.current_homecore_state())
-            .await
+    async fn publish_mapped_node_state(&mut self, publisher: &HomecorePublisher) -> Result<()> {
+        let state = self.current_homecore_state();
+        let node_id = self.test_node_id.clone();
+        let _ = self
+            .publish_state_dedup(publisher, &node_id, &state)
+            .await?;
+        Ok(())
     }
 
-    async fn publish_mapped_sensor_states(&self, publisher: &HomecorePublisher) -> Result<()> {
+    async fn publish_mapped_sensor_states(&mut self, publisher: &HomecorePublisher) -> Result<()> {
         let contact_attrs = mapper::synthetic_contact_attributes(self.contact_open);
         let contact_state = mapper::map_matter_attributes(MatterDeviceClass::ContactSensor, &contact_attrs);
-        publisher.publish_state(&self.contact_sensor_id, &contact_state).await?;
+        let contact_id = self.contact_sensor_id.clone();
+        let _ = self
+            .publish_state_dedup(publisher, &contact_id, &contact_state)
+            .await?;
 
         let occupancy_attrs = mapper::synthetic_occupancy_attributes(self.occupied);
         let occupancy_state =
             mapper::map_matter_attributes(MatterDeviceClass::OccupancySensor, &occupancy_attrs);
-        publisher
-            .publish_state(&self.occupancy_sensor_id, &occupancy_state)
+        let occupancy_id = self.occupancy_sensor_id.clone();
+        let _ = self
+            .publish_state_dedup(publisher, &occupancy_id, &occupancy_state)
             .await?;
 
         let temp_attrs = mapper::synthetic_temperature_attributes(self.temperature_c);
         let temp_state =
             mapper::map_matter_attributes(MatterDeviceClass::TemperatureMeasurement, &temp_attrs);
-        publisher
-            .publish_state(&self.temperature_sensor_id, &temp_state)
+        let temp_id = self.temperature_sensor_id.clone();
+        let _ = self
+            .publish_state_dedup(publisher, &temp_id, &temp_state)
             .await?;
 
         Ok(())
+    }
+
+    async fn publish_state_dedup(
+        &mut self,
+        publisher: &HomecorePublisher,
+        device_id: &str,
+        state: &serde_json::Value,
+    ) -> Result<bool> {
+        if let Some(previous) = self.last_published_state.get(device_id) {
+            if previous == state {
+                self.dedup_suppressed_updates = self.dedup_suppressed_updates.saturating_add(1);
+                return Ok(false);
+            }
+        }
+
+        publisher.publish_state(device_id, state).await?;
+        self.last_published_state
+            .insert(device_id.to_string(), state.clone());
+        Ok(true)
     }
 
     fn persist_snapshot(&self) -> Result<()> {
@@ -473,7 +509,7 @@ impl SpikeRuntime {
         Ok(())
     }
 
-    async fn publish_bootstrap(&self, publisher: &HomecorePublisher) -> Result<()> {
+    async fn publish_bootstrap(&mut self, publisher: &HomecorePublisher) -> Result<()> {
         info!(
             node_id = %self.test_node_id,
             bridge_endpoint_id = %self.bridge_endpoint_id,
@@ -507,14 +543,13 @@ impl SpikeRuntime {
                     None,
                 )
                 .await?;
-            publisher
-                .publish_state(
-                    &self.bridge_endpoint_id,
-                    &json!({
-                        "on": false,
-                        "brightness_pct": 0,
-                    }),
-                )
+            let bridge_state = json!({
+                "on": false,
+                "brightness_pct": 0,
+            });
+            let bridge_id = self.bridge_endpoint_id.clone();
+            let _ = self
+                .publish_state_dedup(publisher, &bridge_id, &bridge_state)
                 .await?;
 
             let bridge_payload = json!({
