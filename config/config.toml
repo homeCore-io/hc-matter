@@ -21,6 +21,16 @@ product_id = 32768
 [matter.network]
 # interface = "eth0"
 
+[matter.bridge]
+# Optional include/exclude rules for bridge endpoint export.
+# include_ids = ["matter_spike_node_1", "matter_spike_temp_1"]
+# exclude_ids = ["matter_spike_bridge_1"]
+# device_type_filter = "light"
+# area_filter = "office"
+
+# Salt for deterministic endpoint ID derivation.
+endpoint_id_salt = "plugin.matter"
+
 [matter.spike]
 # MAT-003: set true to run commissioning/read/toggle/bridge spike behavior.
 enabled = true

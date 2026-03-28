@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::info;
 
+use crate::bridge::{self, BridgeCandidate, BridgedEndpoint};
 use crate::config::{MatterConfig, MatterRole};
 use crate::fabric_store::{CommissionedNode, FabricStore};
 use crate::homecore::HomecorePublisher;
@@ -22,6 +23,7 @@ pub struct SpikeRuntime {
     network_interface: Option<String>,
     storage_dir: PathBuf,
     fabric_store: FabricStore,
+    bridge_cfg: crate::config::BridgeConfig,
     commissioned_nodes: Vec<CommissionedNode>,
     store_warning: Option<String>,
     test_node_class: MatterDeviceClass,
@@ -58,6 +60,7 @@ impl SpikeRuntime {
             network_interface: cfg.matter.network.interface.clone(),
             storage_dir,
             fabric_store,
+            bridge_cfg: cfg.matter.bridge.clone(),
             commissioned_nodes: load.nodes,
             store_warning: load.warning,
             test_node_class: MatterDeviceClass::DimmableLight,
@@ -131,6 +134,15 @@ impl SpikeRuntime {
             },
             "mapping": {
                 "test_node_class": format!("{:?}", self.test_node_class),
+            },
+            "bridge": {
+                "selection": {
+                    "include_ids": self.bridge_cfg.include_ids,
+                    "exclude_ids": self.bridge_cfg.exclude_ids,
+                    "device_type_filter": self.bridge_cfg.device_type_filter,
+                    "area_filter": self.bridge_cfg.area_filter,
+                },
+                "endpoints": self.bridged_endpoints_json(),
             },
             "sensor_snapshot": {
                 "contact_open": self.contact_open,
@@ -355,22 +367,7 @@ impl SpikeRuntime {
                 publisher.publish_event("plugin_metrics", &payload).await?;
             }
             "advertise_bridge" => {
-                if self.advertise_bridge_endpoint {
-                    publisher
-                        .register_device_typed(
-                            &self.bridge_endpoint_id,
-                            "Matter Spike Bridge Endpoint",
-                            "light",
-                            None,
-                        )
-                        .await?;
-                    let payload = json!({
-                        "phase": "bridge_advertise",
-                        "bridge_endpoint_id": self.bridge_endpoint_id,
-                        "result": "ok",
-                    });
-                    publisher.publish_event("plugin_metrics", &payload).await?;
-                }
+                self.publish_bridge_inventory(publisher).await?;
             }
             "discover" => {
                 let timeout_ms = cmd
@@ -426,6 +423,96 @@ impl SpikeRuntime {
     fn current_homecore_state(&self) -> serde_json::Value {
         let matter_attrs = mapper::synthetic_matter_attributes(self.on, self.brightness_pct);
         mapper::map_matter_attributes(self.test_node_class, &matter_attrs)
+    }
+
+    fn bridge_candidates(&self) -> Vec<BridgeCandidate> {
+        let mut candidates = vec![
+            BridgeCandidate {
+                device_id: self.test_node_id.clone(),
+                name: "Matter Spike Node".to_string(),
+                device_type: "light".to_string(),
+                area: Some("office".to_string()),
+            },
+            BridgeCandidate {
+                device_id: self.contact_sensor_id.clone(),
+                name: "Matter Spike Contact Sensor".to_string(),
+                device_type: "contact_sensor".to_string(),
+                area: Some("entryway".to_string()),
+            },
+            BridgeCandidate {
+                device_id: self.occupancy_sensor_id.clone(),
+                name: "Matter Spike Occupancy Sensor".to_string(),
+                device_type: "motion_sensor".to_string(),
+                area: Some("hallway".to_string()),
+            },
+            BridgeCandidate {
+                device_id: self.temperature_sensor_id.clone(),
+                name: "Matter Spike Temperature Sensor".to_string(),
+                device_type: "temperature_sensor".to_string(),
+                area: Some("hallway".to_string()),
+            },
+        ];
+
+        if self.advertise_bridge_endpoint {
+            candidates.push(BridgeCandidate {
+                device_id: self.bridge_endpoint_id.clone(),
+                name: "Matter Spike Bridge Endpoint".to_string(),
+                device_type: "light".to_string(),
+                area: Some("bridge".to_string()),
+            });
+        }
+
+        candidates
+    }
+
+    fn bridged_endpoints(&self) -> Vec<BridgedEndpoint> {
+        bridge::select_bridged_endpoints(&self.bridge_cfg, &self.bridge_candidates())
+    }
+
+    fn bridged_endpoints_json(&self) -> serde_json::Value {
+        json!(
+            self.bridged_endpoints()
+                .into_iter()
+                .map(|e| {
+                    json!({
+                        "device_id": e.candidate.device_id,
+                        "name": e.candidate.name,
+                        "device_type": e.candidate.device_type,
+                        "area": e.candidate.area,
+                        "endpoint_id": e.endpoint_id,
+                    })
+                })
+                .collect::<Vec<_>>()
+        )
+    }
+
+    async fn publish_bridge_inventory(&mut self, publisher: &HomecorePublisher) -> Result<()> {
+        let endpoints = self.bridged_endpoints();
+        for endpoint in &endpoints {
+            publisher
+                .register_device_typed(
+                    &endpoint.candidate.device_id,
+                    &endpoint.candidate.name,
+                    &endpoint.candidate.device_type,
+                    endpoint.candidate.area.as_deref(),
+                )
+                .await?;
+        }
+
+        let payload = json!({
+            "phase": "bridge_advertise",
+            "bridged_endpoints": endpoints
+                .iter()
+                .map(|e| json!({
+                    "device_id": e.candidate.device_id,
+                    "endpoint_id": e.endpoint_id,
+                }))
+                .collect::<Vec<_>>(),
+            "count": endpoints.len(),
+        });
+        publisher.publish_event("plugin_metrics", &payload).await?;
+
+        Ok(())
     }
 
     async fn publish_mapped_node_state(&mut self, publisher: &HomecorePublisher) -> Result<()> {
@@ -534,32 +621,7 @@ impl SpikeRuntime {
             .publish_event("plugin_metrics", &commissioned_payload)
             .await?;
 
-        if self.advertise_bridge_endpoint {
-            publisher
-                .register_device_typed(
-                    &self.bridge_endpoint_id,
-                    "Matter Spike Bridge Endpoint",
-                    "light",
-                    None,
-                )
-                .await?;
-            let bridge_state = json!({
-                "on": false,
-                "brightness_pct": 0,
-            });
-            let bridge_id = self.bridge_endpoint_id.clone();
-            let _ = self
-                .publish_state_dedup(publisher, &bridge_id, &bridge_state)
-                .await?;
-
-            let bridge_payload = json!({
-                "phase": "bridge_advertise",
-                "bridge_endpoint_id": self.bridge_endpoint_id,
-            });
-            publisher
-                .publish_event("plugin_metrics", &bridge_payload)
-                .await?;
-        }
+        self.publish_bridge_inventory(publisher).await?;
 
         publisher
             .register_device_typed(

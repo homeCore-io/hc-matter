@@ -35,6 +35,8 @@ pub struct MatterRuntimeConfig {
     #[serde(default)]
     pub network: NetworkConfig,
     #[serde(default)]
+    pub bridge: BridgeConfig,
+    #[serde(default)]
     pub spike: SpikeConfig,
 }
 
@@ -70,6 +72,20 @@ pub struct SpikeConfig {
     pub bridge_endpoint_id: String,
     #[serde(default)]
     pub advertise_bridge_endpoint: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BridgeConfig {
+    #[serde(default)]
+    pub include_ids: Vec<String>,
+    #[serde(default)]
+    pub exclude_ids: Vec<String>,
+    #[serde(default)]
+    pub device_type_filter: Option<String>,
+    #[serde(default)]
+    pub area_filter: Option<String>,
+    #[serde(default = "default_endpoint_id_salt")]
+    pub endpoint_id_salt: String,
 }
 
 fn default_host() -> String {
@@ -108,6 +124,10 @@ fn default_spike_endpoint_id() -> String {
     "matter_spike_bridge_1".into()
 }
 
+fn default_endpoint_id_salt() -> String {
+    "plugin.matter".into()
+}
+
 impl Default for HomecoreConfig {
     fn default() -> Self {
         Self {
@@ -127,6 +147,7 @@ impl Default for MatterRuntimeConfig {
             heartbeat_secs: default_heartbeat(),
             commissioner: CommissionerConfig::default(),
             network: NetworkConfig::default(),
+            bridge: BridgeConfig::default(),
             spike: SpikeConfig::default(),
         }
     }
@@ -154,6 +175,18 @@ impl Default for SpikeConfig {
             test_node_id: default_spike_node_id(),
             bridge_endpoint_id: default_spike_endpoint_id(),
             advertise_bridge_endpoint: true,
+        }
+    }
+}
+
+impl Default for BridgeConfig {
+    fn default() -> Self {
+        Self {
+            include_ids: Vec::new(),
+            exclude_ids: Vec::new(),
+            device_type_filter: None,
+            area_filter: None,
+            endpoint_id_salt: default_endpoint_id_salt(),
         }
     }
 }

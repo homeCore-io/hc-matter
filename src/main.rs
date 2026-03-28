@@ -1,3 +1,4 @@
+mod bridge;
 mod config;
 mod fabric_store;
 mod homecore;
