@@ -929,6 +929,11 @@ fn command_signature(mapped: &mapper::MappedMatterCommand) -> String {
 fn extract_origin(cmd: &serde_json::Value) -> String {
     cmd.get("origin")
         .and_then(|v| v.as_str())
+        .or_else(|| {
+            cmd.get("meta")
+                .and_then(|v| v.get("origin"))
+                .and_then(|v| v.as_str())
+        })
         .or_else(|| cmd.get("source").and_then(|v| v.as_str()))
         .unwrap_or("homecore")
         .to_string()
@@ -938,6 +943,16 @@ fn extract_correlation_id(cmd: &serde_json::Value) -> Option<String> {
     cmd.get("correlation_id")
         .and_then(|v| v.as_str())
         .or_else(|| cmd.get("correlationId").and_then(|v| v.as_str()))
+        .or_else(|| {
+            cmd.get("meta")
+                .and_then(|v| v.get("correlation_id"))
+                .and_then(|v| v.as_str())
+        })
+        .or_else(|| {
+            cmd.get("context")
+                .and_then(|v| v.get("id"))
+                .and_then(|v| v.as_str())
+        })
         .or_else(|| cmd.get("trace_id").and_then(|v| v.as_str()))
         .or_else(|| cmd.get("request_id").and_then(|v| v.as_str()))
         .map(|s| s.to_string())
@@ -948,4 +963,45 @@ fn is_bridge_origin(origin: &str) -> bool {
         || origin.eq_ignore_ascii_case("bridge")
         || origin.eq_ignore_ascii_case("matter")
         || origin.to_ascii_lowercase().contains("bridge")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn home_assistant_profile_metadata_is_extracted() {
+        let cmd = json!({
+            "origin": "home_assistant_bridge",
+            "context": {
+                "id": "ha-correlation-1"
+            },
+            "on": true,
+        });
+
+        assert_eq!(extract_origin(&cmd), "home_assistant_bridge");
+        assert_eq!(
+            extract_correlation_id(&cmd),
+            Some("ha-correlation-1".to_string())
+        );
+        assert!(is_bridge_origin(&extract_origin(&cmd)));
+    }
+
+    #[test]
+    fn apple_home_profile_metadata_is_extracted() {
+        let cmd = json!({
+            "meta": {
+                "origin": "apple_home_bridge",
+                "correlation_id": "homekit-req-88"
+            },
+            "brightness": 127,
+        });
+
+        assert_eq!(extract_origin(&cmd), "apple_home_bridge");
+        assert_eq!(
+            extract_correlation_id(&cmd),
+            Some("homekit-req-88".to_string())
+        );
+        assert!(is_bridge_origin(&extract_origin(&cmd)));
+    }
 }

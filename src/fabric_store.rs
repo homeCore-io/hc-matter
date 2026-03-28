@@ -504,4 +504,61 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    #[test]
+    fn controller_restart_recovers_plaintext_commissioned_nodes() {
+        let dir = temp_storage_dir("controller-restart-plain");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let first = FabricStore::new(&dir, plaintext_security());
+        first
+            .upsert_node("matter_spike_node_1", 1, &["OnOff", "LevelControl"])
+            .unwrap();
+        first
+            .upsert_node("matter_spike_node_2", 1, &["OnOff"])
+            .unwrap();
+
+        let second = FabricStore::new(&dir, plaintext_security());
+        let loaded = second.load_or_recover().unwrap();
+
+        assert_eq!(loaded.nodes.len(), 2);
+        assert!(loaded
+            .nodes
+            .iter()
+            .any(|n| n.node_id == "matter_spike_node_1"));
+        assert!(loaded
+            .nodes
+            .iter()
+            .any(|n| n.node_id == "matter_spike_node_2"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn controller_restart_recovers_encrypted_commissioned_nodes() {
+        let dir = temp_storage_dir("controller-restart-encrypted");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let key_name = format!("HC_MATTER_STORE_KEY_TEST_RESTART_{}", unix_now());
+        std::env::set_var(&key_name, "restart-test-secret");
+
+        let security = SecurityConfig {
+            key_provider: KeyProvider::Env,
+            key_env_var: key_name.clone(),
+            backup_dir: "backups".to_string(),
+        };
+
+        let first = FabricStore::new(&dir, security.clone());
+        first
+            .upsert_node("matter_spike_node_1", 1, &["OnOff", "LevelControl"])
+            .unwrap();
+
+        let second = FabricStore::new(&dir, security);
+        let loaded = second.load_or_recover().unwrap();
+        assert_eq!(loaded.nodes.len(), 1);
+        assert_eq!(loaded.nodes[0].node_id, "matter_spike_node_1");
+
+        std::env::remove_var(key_name);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

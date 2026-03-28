@@ -169,4 +169,34 @@ mod tests {
         let id = next_available_endpoint_id(1234, &used);
         assert_eq!(id, 1236);
     }
+
+    #[test]
+    fn bridge_restart_keeps_endpoint_inventory_stable() {
+        let cfg = BridgeConfig::default();
+        let candidates = vec![
+            BridgeCandidate {
+                device_id: "sensor.office_motion".to_string(),
+                name: "Office Motion".to_string(),
+                device_type: "motion_sensor".to_string(),
+                area: Some("office".to_string()),
+            },
+            BridgeCandidate {
+                device_id: "light.office_main".to_string(),
+                name: "Office Main".to_string(),
+                device_type: "light".to_string(),
+                area: Some("office".to_string()),
+            },
+            BridgeCandidate {
+                device_id: "sensor.office_temp".to_string(),
+                name: "Office Temp".to_string(),
+                device_type: "temperature_sensor".to_string(),
+                area: Some("office".to_string()),
+            },
+        ];
+
+        let first_boot = select_bridged_endpoints(&cfg, &candidates);
+        let second_boot = select_bridged_endpoints(&cfg, &candidates);
+
+        assert_eq!(first_boot, second_boot);
+    }
 }
