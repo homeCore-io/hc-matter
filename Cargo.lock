@@ -908,6 +908,7 @@ name = "hc-matter"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "heapless",
  "rs-matter",
  "rumqttc",
  "serde",
@@ -1788,7 +1789,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

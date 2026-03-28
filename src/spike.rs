@@ -18,6 +18,7 @@ pub struct SpikeRuntime {
     advertise_bridge_endpoint: bool,
     storage_dir: PathBuf,
     stack_probe: Option<serde_json::Value>,
+    last_discovery: Option<serde_json::Value>,
     on: bool,
     brightness_pct: u8,
 }
@@ -36,6 +37,7 @@ impl SpikeRuntime {
             advertise_bridge_endpoint: cfg.matter.spike.advertise_bridge_endpoint,
             storage_dir: cfg.resolve_storage_dir(config_path),
             stack_probe: None,
+            last_discovery: None,
             on: false,
             brightness_pct: 25,
         };
@@ -68,6 +70,7 @@ impl SpikeRuntime {
             "role": format!("{:?}", self.role).to_lowercase(),
             "interview": self.interview_payload(),
             "matter_stack": self.stack_probe,
+            "last_discovery": self.last_discovery,
         })
     }
 
@@ -210,6 +213,30 @@ impl SpikeRuntime {
                     });
                     publisher.publish_event("plugin_metrics", &payload).await?;
                 }
+            }
+            "discover" => {
+                let timeout_ms = cmd
+                    .get("timeout_ms")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v.min(10_000) as u32)
+                    .unwrap_or(2_000);
+
+                let discovery = match crate::matter_stack::discover_commissionable(timeout_ms).await {
+                    Ok(v) => v,
+                    Err(e) => json!({
+                        "ok": false,
+                        "timeout_ms": timeout_ms,
+                        "error": e.to_string(),
+                    }),
+                };
+
+                self.last_discovery = Some(discovery.clone());
+
+                let payload = json!({
+                    "phase": "discover_commissionable",
+                    "details": discovery,
+                });
+                publisher.publish_event("plugin_metrics", &payload).await?;
             }
             _ => {}
         }

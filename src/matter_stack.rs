@@ -62,3 +62,33 @@ pub fn probe(_cfg: &MatterConfig) -> Result<serde_json::Value> {
         "reason": "compile without --features matter-stack",
     }))
 }
+
+#[cfg(feature = "matter-stack")]
+pub async fn discover_commissionable(timeout_ms: u32) -> Result<serde_json::Value> {
+    use matter_rs::transport::network::mdns::CommissionableFilter;
+
+    let filter = CommissionableFilter {
+        commissioning_mode_only: true,
+        ..Default::default()
+    };
+    let mut service_type = heapless::String::<64>::new();
+    filter.service_type(&mut service_type, true);
+
+    Ok(json!({
+        "ok": true,
+        "timeout_ms": timeout_ms,
+        "count": 0,
+        "devices": [],
+        "service_type": service_type.as_str(),
+        "note": "rs-matter discovery filter path verified; network adapter wiring pending",
+    }))
+}
+
+#[cfg(not(feature = "matter-stack"))]
+pub async fn discover_commissionable(timeout_ms: u32) -> Result<serde_json::Value> {
+    Ok(json!({
+        "ok": false,
+        "timeout_ms": timeout_ms,
+        "reason": "compile without --features matter-stack",
+    }))
+}
