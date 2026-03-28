@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct MatterConfig {
@@ -23,8 +24,38 @@ pub struct HomecoreConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct MatterRuntimeConfig {
+    #[serde(default)]
+    pub role: MatterRole,
+    #[serde(default = "default_storage_dir")]
+    pub storage_dir: String,
     #[serde(default = "default_heartbeat")]
     pub heartbeat_secs: u64,
+    #[serde(default)]
+    pub commissioner: CommissionerConfig,
+    #[serde(default)]
+    pub network: NetworkConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MatterRole {
+    Controller,
+    Bridge,
+    Both,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CommissionerConfig {
+    #[serde(default = "default_vendor_id")]
+    pub vendor_id: u16,
+    #[serde(default = "default_product_id")]
+    pub product_id: u16,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct NetworkConfig {
+    #[serde(default)]
+    pub interface: Option<String>,
 }
 
 fn default_host() -> String {
@@ -43,6 +74,18 @@ fn default_heartbeat() -> u64 {
     30
 }
 
+fn default_storage_dir() -> String {
+    "data/matter".into()
+}
+
+fn default_vendor_id() -> u16 {
+    0xFFF1
+}
+
+fn default_product_id() -> u16 {
+    0x8000
+}
+
 impl Default for HomecoreConfig {
     fn default() -> Self {
         Self {
@@ -57,8 +100,27 @@ impl Default for HomecoreConfig {
 impl Default for MatterRuntimeConfig {
     fn default() -> Self {
         Self {
+            role: MatterRole::Both,
+            storage_dir: default_storage_dir(),
             heartbeat_secs: default_heartbeat(),
+            commissioner: CommissionerConfig::default(),
+            network: NetworkConfig::default(),
         }
+    }
+}
+
+impl Default for CommissionerConfig {
+    fn default() -> Self {
+        Self {
+            vendor_id: default_vendor_id(),
+            product_id: default_product_id(),
+        }
+    }
+}
+
+impl Default for MatterRole {
+    fn default() -> Self {
+        Self::Both
     }
 }
 
@@ -76,5 +138,17 @@ impl MatterConfig {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("reading config: {path}"))?;
         toml::from_str(&content).with_context(|| format!("parsing config: {path}"))
+    }
+
+    pub fn resolve_storage_dir(&self, config_path: &str) -> PathBuf {
+        let candidate = PathBuf::from(&self.matter.storage_dir);
+        if candidate.is_absolute() {
+            return candidate;
+        }
+
+        let config_dir = Path::new(config_path)
+            .parent()
+            .unwrap_or_else(|| Path::new("."));
+        config_dir.join(candidate)
     }
 }

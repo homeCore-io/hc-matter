@@ -2,6 +2,7 @@ mod config;
 mod homecore;
 
 use anyhow::{Context, Result};
+use std::path::Path;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
@@ -30,6 +31,11 @@ async fn main() {
             std::process::exit(1);
         }
     };
+
+    if let Err(e) = ensure_storage_layout(&cfg, &config_path) {
+        error!(error = %e, path = %config_path, "Failed to prepare Matter storage directory");
+        std::process::exit(1);
+    }
 
     for attempt in 1..=MAX_ATTEMPTS {
         info!(attempt, max = MAX_ATTEMPTS, "Starting hc-matter plugin");
@@ -84,6 +90,15 @@ fn init_logging(config_path: &str) -> tracing_appender::non_blocking::WorkerGuar
 }
 
 async fn try_start(cfg: &MatterConfig) -> Result<()> {
+    info!(
+        role = ?cfg.matter.role,
+        storage_dir = %cfg.matter.storage_dir,
+        vendor_id = cfg.matter.commissioner.vendor_id,
+        product_id = cfg.matter.commissioner.product_id,
+        interface = ?cfg.matter.network.interface,
+        "Matter runtime configuration loaded"
+    );
+
     let hc_client = homecore::HomecoreClient::connect(&cfg.homecore)
         .await
         .context("connecting to HomeCore MQTT")?;
@@ -179,4 +194,29 @@ async fn shutdown_signal() {
     {
         let _ = tokio::signal::ctrl_c().await;
     }
+}
+
+fn ensure_storage_layout(cfg: &MatterConfig, config_path: &str) -> Result<()> {
+    let storage_dir = cfg.resolve_storage_dir(config_path);
+    std::fs::create_dir_all(&storage_dir)
+        .with_context(|| format!("creating storage dir: {}", storage_dir.display()))?;
+
+    set_strict_permissions(&storage_dir)?;
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_strict_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let perms = std::fs::Permissions::from_mode(0o700);
+    std::fs::set_permissions(path, perms)
+        .with_context(|| format!("setting permissions 0700 on {}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_strict_permissions(_path: &Path) -> Result<()> {
+    Ok(())
 }
