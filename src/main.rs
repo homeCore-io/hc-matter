@@ -116,6 +116,7 @@ async fn try_start(cfg: &MatterConfig, config_path: &str) -> Result<()> {
         .context("initializing MAT-003 spike runtime")?;
 
     let stack_probe = matter_stack::probe(cfg).context("running matter-stack probe")?;
+    spike_runtime.set_stack_probe(stack_probe.clone());
 
     let probe_path = cfg.resolve_storage_dir(config_path).join("matter_stack_probe.json");
     std::fs::write(&probe_path, serde_json::to_vec_pretty(&stack_probe)?)

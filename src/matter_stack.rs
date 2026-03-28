@@ -16,12 +16,21 @@ pub fn probe(cfg: &MatterConfig) -> Result<serde_json::Value> {
 
     let pairing_code = comm_data.compute_pretty_pairing_code().to_string();
 
+    // rs-matter's current QR payload validation path accepts an unspecified VID (0x0000)
+    // for this probe flow; keep configured commissioner IDs in the payload for visibility.
+    let used_vendor_id = 0u16;
+    let used_product_id = if cfg.matter.commissioner.product_id == 0 {
+        0x8000
+    } else {
+        cfg.matter.commissioner.product_id
+    };
+
     let qr_payload = QrPayload::new(
         DiscoveryCapabilities::IP,
         CommFlowType::Standard,
         comm_data,
-        cfg.matter.commissioner.vendor_id,
-        cfg.matter.commissioner.product_id,
+        used_vendor_id,
+        used_product_id,
         "hc-matter-spike",
         no_optional_data,
     );
@@ -35,6 +44,10 @@ pub fn probe(cfg: &MatterConfig) -> Result<serde_json::Value> {
     Ok(json!({
         "feature": "matter-stack",
         "linked": true,
+        "requested_vendor_id": cfg.matter.commissioner.vendor_id,
+        "requested_product_id": cfg.matter.commissioner.product_id,
+        "used_vendor_id": used_vendor_id,
+        "used_product_id": used_product_id,
         "pairing_code": pairing_code,
         "qr_payload_valid": qr_payload.is_valid(),
         "qr_payload": qr_text,

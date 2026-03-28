@@ -17,6 +17,7 @@ pub struct SpikeRuntime {
     bridge_endpoint_id: String,
     advertise_bridge_endpoint: bool,
     storage_dir: PathBuf,
+    stack_probe: Option<serde_json::Value>,
     on: bool,
     brightness_pct: u8,
 }
@@ -34,6 +35,7 @@ impl SpikeRuntime {
             bridge_endpoint_id: cfg.matter.spike.bridge_endpoint_id.clone(),
             advertise_bridge_endpoint: cfg.matter.spike.advertise_bridge_endpoint,
             storage_dir: cfg.resolve_storage_dir(config_path),
+            stack_probe: None,
             on: false,
             brightness_pct: 25,
         };
@@ -51,6 +53,10 @@ impl SpikeRuntime {
         self.enabled
     }
 
+    pub fn set_stack_probe(&mut self, stack_probe: serde_json::Value) {
+        self.stack_probe = Some(stack_probe);
+    }
+
     pub fn controller_state(&self) -> serde_json::Value {
         json!({
             "spike_enabled": self.enabled,
@@ -61,6 +67,7 @@ impl SpikeRuntime {
             "brightness_pct": self.brightness_pct,
             "role": format!("{:?}", self.role).to_lowercase(),
             "interview": self.interview_payload(),
+            "matter_stack": self.stack_probe,
         })
     }
 
