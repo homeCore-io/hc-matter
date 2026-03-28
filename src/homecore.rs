@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 use serde_json::Value;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -15,6 +16,7 @@ pub struct HomecorePublisher {
     client: AsyncClient,
     plugin_id: String,
     command_subscriptions: Arc<RwLock<HashSet<String>>>,
+    subscription_reconnects: Arc<AtomicU64>,
 }
 
 impl HomecorePublisher {
@@ -79,6 +81,10 @@ impl HomecorePublisher {
             .await
             .context("publish_plugin_status failed")
     }
+
+    pub fn subscription_reconnects(&self) -> u64 {
+        self.subscription_reconnects.load(Ordering::Relaxed)
+    }
 }
 
 pub struct HomecoreClient {
@@ -86,6 +92,7 @@ pub struct HomecoreClient {
     eventloop: rumqttc::EventLoop,
     plugin_id: String,
     command_subscriptions: Arc<RwLock<HashSet<String>>>,
+    subscription_reconnects: Arc<AtomicU64>,
 }
 
 impl HomecoreClient {
@@ -100,6 +107,7 @@ impl HomecoreClient {
 
         let (client, eventloop) = AsyncClient::new(opts, 64);
         let command_subscriptions = Arc::new(RwLock::new(HashSet::new()));
+        let subscription_reconnects = Arc::new(AtomicU64::new(0));
         info!(
             host = %cfg.broker_host,
             port = cfg.broker_port,
@@ -112,6 +120,7 @@ impl HomecoreClient {
             eventloop,
             plugin_id: cfg.plugin_id.clone(),
             command_subscriptions,
+            subscription_reconnects,
         })
     }
 
@@ -120,15 +129,23 @@ impl HomecoreClient {
             client: self.client.clone(),
             plugin_id: self.plugin_id.clone(),
             command_subscriptions: Arc::clone(&self.command_subscriptions),
+            subscription_reconnects: Arc::clone(&self.subscription_reconnects),
         }
     }
 
     pub async fn run(mut self, tx: mpsc::Sender<(String, Value)>) -> Result<()> {
         info!("HomeCore MQTT event loop starting");
+        let mut connected_once = false;
         loop {
             match self.eventloop.poll().await {
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
                     info!("Connected to HomeCore broker");
+                    if connected_once {
+                        self.subscription_reconnects
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    connected_once = true;
+
                     if let Err(e) = resubscribe_command_topics(
                         self.client.clone(),
                         Arc::clone(&self.command_subscriptions),

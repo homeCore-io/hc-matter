@@ -42,6 +42,12 @@ pub struct SpikeRuntime {
     dedup_suppressed_updates: u64,
     recent_applied_commands: HashMap<String, RecentAppliedCommand>,
     loop_prevented_writes: u64,
+    subscription_reconnects: u64,
+    command_count: u64,
+    command_latency_total_ms: u64,
+    last_command_latency_ms: u64,
+    failed_commands: u64,
+    last_error: Option<String>,
 }
 
 struct RecentAppliedCommand {
@@ -88,6 +94,12 @@ impl SpikeRuntime {
             dedup_suppressed_updates: 0,
             recent_applied_commands: HashMap::new(),
             loop_prevented_writes: 0,
+            subscription_reconnects: 0,
+            command_count: 0,
+            command_latency_total_ms: 0,
+            last_command_latency_ms: 0,
+            failed_commands: 0,
+            last_error: None,
         };
 
         if let Some(warning) = &runtime.store_warning {
@@ -130,6 +142,13 @@ impl SpikeRuntime {
     }
 
     pub fn controller_state(&self) -> serde_json::Value {
+        let health_errors = self.health_errors();
+        let status = if health_errors.is_empty() {
+            "ok"
+        } else {
+            "degraded"
+        };
+
         json!({
             "spike_enabled": self.enabled,
             "node_id": self.test_node_id,
@@ -165,15 +184,30 @@ impl SpikeRuntime {
                 "suppressed_updates": self.dedup_suppressed_updates,
                 "loop_prevented_writes": self.loop_prevented_writes,
             },
+            "metrics": {
+                "commissioned_nodes": self.commissioned_nodes.len(),
+                "bridged_endpoints": self.bridged_endpoints().len(),
+                "subscription_reconnects": self.subscription_reconnects,
+                "command_latency_ms": self.last_command_latency_ms,
+                "failed_commands": self.failed_commands,
+                "avg_command_latency_ms": self.average_command_latency_ms(),
+            },
+            "health": {
+                "status": status,
+                "errors": health_errors,
+                "last_error": self.last_error,
+            },
             "matter_stack": self.stack_probe,
             "last_discovery": self.last_discovery,
         })
     }
 
-    pub async fn on_heartbeat(&self, publisher: &HomecorePublisher) -> Result<()> {
+    pub async fn on_heartbeat(&mut self, publisher: &HomecorePublisher) -> Result<()> {
         if !self.enabled {
             return Ok(());
         }
+
+        self.subscription_reconnects = publisher.subscription_reconnects();
 
         let payload = json!({
             "phase": "spike_heartbeat",
@@ -187,7 +221,23 @@ impl SpikeRuntime {
             "loop_prevented_writes": self.loop_prevented_writes,
         });
         publisher.publish_event("plugin_metrics", &payload).await?;
+
+        self.emit_ops_metrics(publisher).await?;
+
         self.persist_snapshot()
+    }
+
+    pub fn plugin_status(&self) -> &'static str {
+        if self.health_errors().is_empty() {
+            "active"
+        } else {
+            "degraded"
+        }
+    }
+
+    pub fn record_failed_command(&mut self, device_id: &str, error: &str) {
+        self.failed_commands = self.failed_commands.saturating_add(1);
+        self.last_error = Some(format!("device={device_id}: {error}"));
     }
 
     pub async fn handle_command(
@@ -196,12 +246,18 @@ impl SpikeRuntime {
         cmd: &serde_json::Value,
         publisher: &HomecorePublisher,
     ) -> Result<()> {
+        let started = Instant::now();
+
         if !self.enabled {
             return Ok(());
         }
 
+        self.subscription_reconnects = publisher.subscription_reconnects();
+
         if device_id == "matter_controller" {
-            return self.handle_controller_command(cmd, publisher).await;
+            self.handle_controller_command(cmd, publisher).await?;
+            self.record_command_latency(started.elapsed());
+            return Ok(());
         }
 
         if !self.is_bridged_light_endpoint(device_id) {
@@ -233,6 +289,7 @@ impl SpikeRuntime {
                 }
             });
             publisher.publish_event("plugin_metrics", &payload).await?;
+            self.record_command_latency(started.elapsed());
             return Ok(());
         }
 
@@ -271,6 +328,7 @@ impl SpikeRuntime {
             }
         });
         publisher.publish_event("plugin_metrics", &payload).await?;
+        self.record_command_latency(started.elapsed());
         self.persist_snapshot()?;
 
         Ok(())
@@ -625,7 +683,58 @@ impl SpikeRuntime {
         });
         publisher.publish_event("plugin_metrics", &payload).await?;
 
+        self.emit_ops_metrics(publisher).await?;
+
         Ok(())
+    }
+
+    async fn emit_ops_metrics(&self, publisher: &HomecorePublisher) -> Result<()> {
+        let payload = json!({
+            "phase": "ops_metrics",
+            "commissioned_nodes": self.commissioned_nodes.len(),
+            "bridged_endpoints": self.bridged_endpoints().len(),
+            "subscription_reconnects": self.subscription_reconnects,
+            "command_latency_ms": self.last_command_latency_ms,
+            "failed_commands": self.failed_commands,
+            "avg_command_latency_ms": self.average_command_latency_ms(),
+        });
+        publisher.publish_event("plugin_metrics", &payload).await
+    }
+
+    fn average_command_latency_ms(&self) -> u64 {
+        if self.command_count == 0 {
+            return 0;
+        }
+        self.command_latency_total_ms / self.command_count
+    }
+
+    fn health_errors(&self) -> Vec<serde_json::Value> {
+        let mut errors = Vec::new();
+
+        if let Some(warning) = &self.store_warning {
+            errors.push(json!({
+                "code": "fabric_store_warning",
+                "message": warning,
+                "action": "Inspect data/matter/fabric_store*.json and reconcile corrupted snapshots.",
+            }));
+        }
+
+        if let Some(last_error) = &self.last_error {
+            errors.push(json!({
+                "code": "command_failure",
+                "message": last_error,
+                "action": "Inspect command payload origin/correlation_id and plugin logs for bridge loop or mapping failures.",
+            }));
+        }
+
+        errors
+    }
+
+    fn record_command_latency(&mut self, latency: Duration) {
+        let latency_ms = latency.as_millis().min(u64::MAX as u128) as u64;
+        self.last_command_latency_ms = latency_ms;
+        self.command_count = self.command_count.saturating_add(1);
+        self.command_latency_total_ms = self.command_latency_total_ms.saturating_add(latency_ms);
     }
 
     async fn publish_mapped_node_state(&mut self, publisher: &HomecorePublisher) -> Result<()> {

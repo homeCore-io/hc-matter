@@ -159,7 +159,7 @@ async fn try_start(cfg: &MatterConfig, config_path: &str) -> Result<()> {
     }
 
     publisher
-        .publish_plugin_status("active")
+        .publish_plugin_status(spike_runtime.plugin_status())
         .await
         .context("publishing startup status")?;
 
@@ -177,7 +177,15 @@ async fn try_start(cfg: &MatterConfig, config_path: &str) -> Result<()> {
                             .handle_command(&device_id, &cmd, &publisher)
                             .await
                         {
+                            spike_runtime.record_failed_command(&device_id, &e.to_string());
                             warn!(error = %e, device_id = %device_id, "MAT-003 spike command handling failed");
+                        }
+
+                        if let Err(e) = publisher
+                            .publish_state(BOOTSTRAP_DEVICE_ID, &spike_runtime.controller_state())
+                            .await
+                        {
+                            warn!(error = %e, "Failed to publish controller state after command handling");
                         }
                     }
                     None => {
@@ -199,7 +207,7 @@ async fn try_start(cfg: &MatterConfig, config_path: &str) -> Result<()> {
                     warn!(error = %e, "Failed to publish heartbeat registration");
                 }
 
-                if let Err(e) = publisher.publish_plugin_status("active").await {
+                if let Err(e) = publisher.publish_plugin_status(spike_runtime.plugin_status()).await {
                     warn!(error = %e, "Failed to publish heartbeat status");
                 }
 
