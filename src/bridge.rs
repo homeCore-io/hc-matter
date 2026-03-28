@@ -1,4 +1,5 @@
 use crate::config::BridgeConfig;
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeCandidate {
@@ -18,12 +19,27 @@ pub fn select_bridged_endpoints(
     cfg: &BridgeConfig,
     candidates: &[BridgeCandidate],
 ) -> Vec<BridgedEndpoint> {
-    candidates
+    let mut selected: Vec<BridgeCandidate> = candidates
         .iter()
         .filter(|c| should_include(cfg, c))
-        .map(|c| BridgedEndpoint {
-            endpoint_id: derive_endpoint_id(&cfg.endpoint_id_salt, &c.device_id),
-            candidate: c.clone(),
+        .cloned()
+        .collect();
+
+    // Keep endpoint export ordering stable across process restarts.
+    selected.sort_by(|a, b| a.device_id.cmp(&b.device_id));
+    selected.dedup_by(|a, b| a.device_id == b.device_id);
+
+    let mut used_ids = HashSet::new();
+    selected
+        .into_iter()
+        .map(|candidate| {
+            let base = derive_endpoint_id(&cfg.endpoint_id_salt, &candidate.device_id);
+            let endpoint_id = next_available_endpoint_id(base, &used_ids);
+            used_ids.insert(endpoint_id);
+            BridgedEndpoint {
+                endpoint_id,
+                candidate,
+            }
         })
         .collect()
 }
@@ -66,6 +82,20 @@ pub fn derive_endpoint_id(salt: &str, device_id: &str) -> u16 {
 
     // Keep 0 and 1 reserved; deterministic output in [2, 65534].
     ((hash % 65_533) + 2) as u16
+}
+
+fn next_available_endpoint_id(base: u16, used: &HashSet<u16>) -> u16 {
+    if !used.contains(&base) {
+        return base;
+    }
+
+    let mut candidate = base;
+    loop {
+        candidate = if candidate >= 65_534 { 2 } else { candidate + 1 };
+        if !used.contains(&candidate) {
+            return candidate;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -116,5 +146,27 @@ mod tests {
         let selected = select_bridged_endpoints(&cfg, &sample_candidates());
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].candidate.device_type, "motion_sensor");
+    }
+
+    #[test]
+    fn duplicate_device_ids_are_collapsed() {
+        let cfg = BridgeConfig::default();
+        let mut candidates = sample_candidates();
+        candidates.push(candidates[0].clone());
+
+        let selected = select_bridged_endpoints(&cfg, &candidates);
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[0].candidate.device_id, "light.office_main");
+        assert_eq!(selected[1].candidate.device_id, "sensor.office_motion");
+    }
+
+    #[test]
+    fn endpoint_id_collision_advances_deterministically() {
+        let mut used = HashSet::new();
+        used.insert(1234);
+        used.insert(1235);
+
+        let id = next_available_endpoint_id(1234, &used);
+        assert_eq!(id, 1236);
     }
 }

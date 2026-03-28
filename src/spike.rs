@@ -190,7 +190,7 @@ impl SpikeRuntime {
             return self.handle_controller_command(cmd, publisher).await;
         }
 
-        if device_id != self.test_node_id {
+        if !self.is_bridged_light_endpoint(device_id) {
             return Ok(());
         }
 
@@ -205,10 +205,12 @@ impl SpikeRuntime {
         }
 
         self.publish_mapped_node_state(publisher).await?;
+        self.publish_bridged_light_states(publisher).await?;
 
         let payload = json!({
             "phase": "mapped_command_roundtrip",
-            "node_id": self.test_node_id,
+            "node_id": device_id,
+            "source_node_id": self.test_node_id,
             "mapped": {
                 "on": mapped.on,
                 "level": mapped.level,
@@ -469,6 +471,21 @@ impl SpikeRuntime {
         bridge::select_bridged_endpoints(&self.bridge_cfg, &self.bridge_candidates())
     }
 
+    fn is_bridged_light_endpoint(&self, device_id: &str) -> bool {
+        self.bridged_endpoints().iter().any(|e| {
+            e.candidate.device_id == device_id
+                && e.candidate.device_type.eq_ignore_ascii_case("light")
+        })
+    }
+
+    fn bridged_light_ids(&self) -> Vec<String> {
+        self.bridged_endpoints()
+            .into_iter()
+            .filter(|e| e.candidate.device_type.eq_ignore_ascii_case("light"))
+            .map(|e| e.candidate.device_id)
+            .collect()
+    }
+
     fn bridged_endpoints_json(&self) -> serde_json::Value {
         json!(
             self.bridged_endpoints()
@@ -497,6 +514,12 @@ impl SpikeRuntime {
                     endpoint.candidate.area.as_deref(),
                 )
                 .await?;
+
+            if endpoint.candidate.device_type.eq_ignore_ascii_case("light") {
+                publisher
+                    .subscribe_commands(&endpoint.candidate.device_id)
+                    .await?;
+            }
         }
 
         let payload = json!({
@@ -521,6 +544,17 @@ impl SpikeRuntime {
         let _ = self
             .publish_state_dedup(publisher, &node_id, &state)
             .await?;
+        Ok(())
+    }
+
+    async fn publish_bridged_light_states(&mut self, publisher: &HomecorePublisher) -> Result<()> {
+        let state = self.current_homecore_state();
+        let light_ids = self.bridged_light_ids();
+        for device_id in light_ids {
+            let _ = self
+                .publish_state_dedup(publisher, &device_id, &state)
+                .await?;
+        }
         Ok(())
     }
 
@@ -609,6 +643,7 @@ impl SpikeRuntime {
         publisher.subscribe_commands(&self.test_node_id).await?;
 
         self.publish_mapped_node_state(publisher).await?;
+        self.publish_bridged_light_states(publisher).await?;
 
         let commissioned_payload = json!({
             "phase": "commission",
