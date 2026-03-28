@@ -9,6 +9,7 @@ CHIP_SRC_DIR="$HC_MATTER_DIR/third_party/connectedhomeip"
 OUT_DIR="${CHIP_OUT_DIR:-$CHIP_SRC_DIR/out/chip-tool}"
 BUILT_BIN="$OUT_DIR/chip-tool"
 STAGED_BIN="$HC_MATTER_DIR/bin/chip-tool"
+ACTIVATE_ENV="${CHIP_ACTIVATE_ENV:-0}"
 FORCE=false
 
 while [[ $# -gt 0 ]]; do
@@ -32,6 +33,7 @@ done
 
 log() { echo "==> $*"; }
 info() { echo "    $*"; }
+warn() { echo "    [warn] $*"; }
 
 if [[ -x "$STAGED_BIN" && "$FORCE" != true ]]; then
     info "chip-tool already staged: ${STAGED_BIN#$HC_MATTER_DIR/}"
@@ -40,8 +42,8 @@ fi
 
 if [[ ! -d "$CHIP_SRC_DIR" ]]; then
     log "Initializing connectedhomeip submodule"
-    git -C "$HC_MATTER_DIR" submodule update --init --recursive third_party/connectedhomeip
 fi
+git -C "$HC_MATTER_DIR" submodule update --init --recursive third_party/connectedhomeip
 
 if ! command -v gn >/dev/null 2>&1; then
     echo "ERROR: gn is required to build chip-tool (install gn/ninja build tooling)." >&2
@@ -56,9 +58,15 @@ fi
 log "Building chip-tool from submodule"
 pushd "$CHIP_SRC_DIR" >/dev/null
 
-if [[ -f "scripts/activate.sh" ]]; then
+if [[ "$ACTIVATE_ENV" == "1" && -f "scripts/activate.sh" ]]; then
+    # Optional environment activation. Disabled by default because it may attempt
+    # system-level python package installs on managed environments.
+    set +u
     # shellcheck source=/dev/null
-    source scripts/activate.sh
+    if ! source scripts/activate.sh; then
+        warn "connectedhomeip environment activation failed; continuing with system gn/ninja"
+    fi
+    set -u
 fi
 
 if [[ ! -f "$OUT_DIR/build.ninja" || "$FORCE" == true ]]; then
