@@ -227,7 +227,6 @@ impl SpikeRuntime {
         if !self.enabled {
             return Ok(());
         }
-
         self.subscription_reconnects = publisher.subscription_reconnects();
 
         let payload = json!({
@@ -428,53 +427,164 @@ impl SpikeRuntime {
                     .filter(|v| !v.is_empty())
                     .unwrap_or_else(|| vec!["OnOff".to_string(), "LevelControl".to_string()]);
 
-                let node_id = requested_node_id.unwrap_or_else(|| {
-                    self.derive_commissioned_node_id(
-                        pairing_code.as_deref(),
-                        commissioned_name.as_deref(),
-                    )
-                });
+                let timeout_ms = cmd
+                    .get("timeout_ms")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v.min(15_000) as u32)
+                    .unwrap_or(3_000);
 
-                if node_id == self.test_node_id {
-                    self.commissioned_name_override = commissioned_name.clone();
-                    self.commissioned_area_override = commissioned_area.clone();
-                    self.test_node_class = mapper::classify_from_clusters(&clusters);
-                }
+                let allow_simulated = cmd
+                    .get("allow_simulated")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
 
-                self.last_commission_request = Some(json!({
-                    "node_id": node_id,
-                    "pairing_code_present": pairing_code.is_some(),
-                    "discriminator": discriminator,
-                    "passcode_present": passcode.is_some(),
-                    "name": commissioned_name,
-                    "area": commissioned_area,
-                }));
-
-                self.publish_bootstrap(publisher).await?;
-                self.upsert_commissioned_node(&node_id, endpoint, &clusters)?;
-                self.publish_commissioned_node_registration(
-                    publisher,
-                    &node_id,
-                    commissioned_name.as_deref(),
-                    commissioned_area.as_deref(),
+                let discovery = match crate::matter_stack::discover_commissionable(
+                    timeout_ms,
+                    self.network_interface.as_deref(),
                 )
-                .await?;
-                let payload = json!({
-                    "phase": "commission",
-                    "node_id": node_id,
-                    "result": "ok",
-                    "persisted_nodes": self.commissioned_nodes.len(),
-                    "commissioning": {
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => json!({
+                        "ok": false,
+                        "timeout_ms": timeout_ms,
+                        "error": e.to_string(),
+                    }),
+                };
+
+                self.last_discovery = Some(discovery.clone());
+
+                let selected_discovery = discovery
+                    .get("devices")
+                    .and_then(|v| v.as_array())
+                    .and_then(|items| {
+                        if let Some(target) = discriminator {
+                            items
+                                .iter()
+                                .find(|d| d.get("discriminator").and_then(|v| v.as_u64()) == Some(target as u64))
+                                .cloned()
+                        } else {
+                            items.first().cloned()
+                        }
+                    });
+
+                if selected_discovery.is_none() && !allow_simulated {
+                    self.last_error = Some(
+                        "commission blocked: no commissionable Matter device discovered"
+                            .to_string(),
+                    );
+
+                    self.last_commission_request = Some(json!({
+                        "result": "blocked",
+                        "reason": "no_commissionable_device_discovered",
+                        "timeout_ms": timeout_ms,
                         "pairing_code_present": pairing_code.is_some(),
                         "discriminator": discriminator,
                         "passcode_present": passcode.is_some(),
                         "name": commissioned_name,
                         "area": commissioned_area,
-                        "endpoint": endpoint,
-                        "clusters": clusters,
+                    }));
+
+                    let payload = json!({
+                        "phase": "commission_blocked",
+                        "result": "blocked",
+                        "reason": "no_commissionable_device_discovered",
+                        "timeout_ms": timeout_ms,
+                        "discovery": discovery,
+                        "suggestions": [
+                            "Put the device in Matter pairing mode before retrying",
+                            "Ensure 2.4GHz LAN and multicast mDNS are reachable",
+                            "If testing without real hardware, send allow_simulated=true"
+                        ]
+                    });
+                    publisher.publish_event("plugin_metrics", &payload).await?;
+                    // Keep controller state publish at end of handler so UI can show blocked status.
+                    // Do not fabricate commissioned nodes when discovery fails.
+                    
+                } else {
+                    self.last_error = None;
+
+                    let discovered_instance = selected_discovery
+                        .as_ref()
+                        .and_then(|d| d.get("instance_name"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string());
+
+                    let discovered_name = selected_discovery
+                        .as_ref()
+                        .and_then(|d| d.get("device_name"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string());
+
+                    let effective_name = commissioned_name
+                        .clone()
+                        .or(discovered_name.clone());
+
+                    let node_id = requested_node_id.unwrap_or_else(|| {
+                        if let Some(instance) = discovered_instance.as_deref() {
+                            let seed = sanitize_node_segment(instance);
+                            if !seed.is_empty() {
+                                return self.ensure_unique_node_id(&format!("matter_node_{seed}"));
+                            }
+                        }
+                        self.derive_commissioned_node_id(
+                            pairing_code.as_deref(),
+                            effective_name.as_deref(),
+                        )
+                    });
+
+                    if node_id == self.test_node_id {
+                        self.commissioned_name_override = effective_name.clone();
+                        self.commissioned_area_override = commissioned_area.clone();
+                        self.test_node_class = mapper::classify_from_clusters(&clusters);
                     }
-                });
-                publisher.publish_event("plugin_metrics", &payload).await?;
+
+                    self.last_commission_request = Some(json!({
+                        "result": "ok",
+                        "node_id": node_id,
+                        "pairing_code_present": pairing_code.is_some(),
+                        "discriminator": discriminator,
+                        "passcode_present": passcode.is_some(),
+                        "name": effective_name,
+                        "area": commissioned_area,
+                        "timeout_ms": timeout_ms,
+                        "allow_simulated": allow_simulated,
+                        "selected_discovery": selected_discovery,
+                    }));
+
+                    self.publish_bootstrap(publisher).await?;
+                    self.upsert_commissioned_node(&node_id, endpoint, &clusters)?;
+                    self.publish_commissioned_node_registration(
+                        publisher,
+                        &node_id,
+                        effective_name.as_deref(),
+                        commissioned_area.as_deref(),
+                    )
+                    .await?;
+                    let payload = json!({
+                        "phase": "commission",
+                        "node_id": node_id,
+                        "result": "ok",
+                        "persisted_nodes": self.commissioned_nodes.len(),
+                        "commissioning": {
+                            "pairing_code_present": pairing_code.is_some(),
+                            "discriminator": discriminator,
+                            "passcode_present": passcode.is_some(),
+                            "name": effective_name,
+                            "area": commissioned_area,
+                            "endpoint": endpoint,
+                            "clusters": clusters,
+                            "timeout_ms": timeout_ms,
+                            "allow_simulated": allow_simulated,
+                            "selected_discovery": selected_discovery,
+                        }
+                    });
+                    publisher.publish_event("plugin_metrics", &payload).await?;
+                }
             }
             "read" => {
                 let mapped_state = self.current_homecore_state();
@@ -1165,6 +1275,21 @@ fn tail(input: &str, max_len: usize) -> &str {
         return input;
     }
     &input[input.len() - max_len..]
+}
+
+fn sanitize_node_segment(input: &str) -> String {
+    input
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string()
 }
 
 #[cfg(test)]
