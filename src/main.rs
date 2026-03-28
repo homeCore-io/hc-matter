@@ -11,6 +11,9 @@ use config::MatterConfig;
 
 const MAX_ATTEMPTS: u32 = 3;
 const RETRY_DELAY_SECS: u64 = 60;
+const BOOTSTRAP_DEVICE_ID: &str = "matter_controller";
+const BOOTSTRAP_DEVICE_NAME: &str = "Matter Controller";
+const BOOTSTRAP_DEVICE_TYPE: &str = "bridge";
 
 #[tokio::main]
 async fn main() {
@@ -91,9 +94,9 @@ async fn try_start(cfg: &MatterConfig) -> Result<()> {
 
     publisher
         .register_device_typed(
-            "matter_controller",
-            "Matter Controller",
-            "bridge",
+            BOOTSTRAP_DEVICE_ID,
+            BOOTSTRAP_DEVICE_NAME,
+            BOOTSTRAP_DEVICE_TYPE,
             None,
         )
         .await
@@ -118,6 +121,18 @@ async fn try_start(cfg: &MatterConfig) -> Result<()> {
                 }
             }
             _ = heartbeat.tick() => {
+                if let Err(e) = publisher
+                    .register_device_typed(
+                        BOOTSTRAP_DEVICE_ID,
+                        BOOTSTRAP_DEVICE_NAME,
+                        BOOTSTRAP_DEVICE_TYPE,
+                        None,
+                    )
+                    .await
+                {
+                    warn!(error = %e, "Failed to publish heartbeat registration");
+                }
+
                 if let Err(e) = publisher.publish_plugin_status("active").await {
                     warn!(error = %e, "Failed to publish heartbeat status");
                 }
