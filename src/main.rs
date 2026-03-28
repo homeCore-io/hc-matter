@@ -124,6 +124,18 @@ async fn try_start(cfg: &MatterConfig) -> Result<()> {
         .context("publishing bootstrap registration")?;
 
     publisher
+        .subscribe_commands(BOOTSTRAP_DEVICE_ID)
+        .await
+        .context("subscribing controller command topic")?;
+
+    if spike_runtime.enabled() {
+        publisher
+            .publish_state(BOOTSTRAP_DEVICE_ID, &spike_runtime.controller_state())
+            .await
+            .context("publishing controller spike state")?;
+    }
+
+    publisher
         .publish_plugin_status("active")
         .await
         .context("publishing startup status")?;

@@ -19,6 +19,18 @@ pub struct SpikeRuntime {
 }
 
 impl SpikeRuntime {
+    pub fn controller_state(&self) -> serde_json::Value {
+        json!({
+            "spike_enabled": self.enabled,
+            "node_id": self.test_node_id,
+            "bridge_endpoint_id": self.bridge_endpoint_id,
+            "commissioned": true,
+            "on": self.on,
+            "brightness_pct": self.brightness_pct,
+            "role": format!("{:?}", self.role).to_lowercase(),
+        })
+    }
+
     pub async fn new(cfg: &MatterConfig, publisher: &HomecorePublisher) -> Result<Self> {
         let runtime = Self {
             enabled: cfg.matter.spike.enabled,
@@ -68,6 +80,10 @@ impl SpikeRuntime {
             return Ok(());
         }
 
+        if device_id == "matter_controller" {
+            return self.handle_controller_command(cmd, publisher).await;
+        }
+
         if device_id != self.test_node_id {
             return Ok(());
         }
@@ -97,6 +113,81 @@ impl SpikeRuntime {
             "brightness_pct": self.brightness_pct,
         });
         publisher.publish_event("plugin_metrics", &payload).await?;
+
+        Ok(())
+    }
+
+    async fn handle_controller_command(
+        &mut self,
+        cmd: &serde_json::Value,
+        publisher: &HomecorePublisher,
+    ) -> Result<()> {
+        let action = cmd
+            .get("action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("read");
+
+        match action {
+            "commission" => {
+                self.publish_bootstrap(publisher).await?;
+                let payload = json!({
+                    "phase": "commission",
+                    "node_id": self.test_node_id,
+                    "result": "ok",
+                });
+                publisher.publish_event("plugin_metrics", &payload).await?;
+            }
+            "read" => {
+                let payload = json!({
+                    "phase": "read_onoff_level",
+                    "node_id": self.test_node_id,
+                    "on": self.on,
+                    "brightness_pct": self.brightness_pct,
+                });
+                publisher.publish_event("plugin_metrics", &payload).await?;
+            }
+            "toggle" => {
+                self.on = !self.on;
+                publisher
+                    .publish_state(
+                        &self.test_node_id,
+                        &json!({
+                            "on": self.on,
+                            "brightness_pct": self.brightness_pct,
+                        }),
+                    )
+                    .await?;
+                let payload = json!({
+                    "phase": "toggle_onoff",
+                    "node_id": self.test_node_id,
+                    "on": self.on,
+                });
+                publisher.publish_event("plugin_metrics", &payload).await?;
+            }
+            "advertise_bridge" => {
+                if self.advertise_bridge_endpoint {
+                    publisher
+                        .register_device_typed(
+                            &self.bridge_endpoint_id,
+                            "Matter Spike Bridge Endpoint",
+                            "light",
+                            None,
+                        )
+                        .await?;
+                    let payload = json!({
+                        "phase": "bridge_advertise",
+                        "bridge_endpoint_id": self.bridge_endpoint_id,
+                        "result": "ok",
+                    });
+                    publisher.publish_event("plugin_metrics", &payload).await?;
+                }
+            }
+            _ => {}
+        }
+
+        publisher
+            .publish_state("matter_controller", &self.controller_state())
+            .await?;
 
         Ok(())
     }
