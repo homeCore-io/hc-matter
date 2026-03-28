@@ -1,8 +1,10 @@
 mod config;
 mod homecore;
+mod matter_stack;
 mod spike;
 
 use anyhow::{Context, Result};
+use serde_json::json;
 use std::path::Path;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -112,6 +114,23 @@ async fn try_start(cfg: &MatterConfig, config_path: &str) -> Result<()> {
     let mut spike_runtime = SpikeRuntime::new(cfg, config_path, &publisher)
         .await
         .context("initializing MAT-003 spike runtime")?;
+
+    let stack_probe = matter_stack::probe(cfg).context("running matter-stack probe")?;
+
+    let probe_path = cfg.resolve_storage_dir(config_path).join("matter_stack_probe.json");
+    std::fs::write(&probe_path, serde_json::to_vec_pretty(&stack_probe)?)
+        .with_context(|| format!("writing matter-stack probe file: {}", probe_path.display()))?;
+
+    publisher
+        .publish_event(
+            "plugin_metrics",
+            &json!({
+                "phase": "matter_stack_probe",
+                "details": stack_probe,
+            }),
+        )
+        .await
+        .context("publishing matter-stack probe event")?;
 
     publisher
         .register_device_typed(
