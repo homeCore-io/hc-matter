@@ -2,6 +2,7 @@ use anyhow::Result;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 use tracing::info;
 
 use crate::bridge::{self, BridgeCandidate, BridgedEndpoint};
@@ -39,6 +40,15 @@ pub struct SpikeRuntime {
     temperature_c: f64,
     last_published_state: HashMap<String, serde_json::Value>,
     dedup_suppressed_updates: u64,
+    recent_applied_commands: HashMap<String, RecentAppliedCommand>,
+    loop_prevented_writes: u64,
+}
+
+struct RecentAppliedCommand {
+    signature: String,
+    origin: String,
+    correlation_id: Option<String>,
+    seen_at: Instant,
 }
 
 impl SpikeRuntime {
@@ -76,6 +86,8 @@ impl SpikeRuntime {
             temperature_c: 21.5,
             last_published_state: HashMap::new(),
             dedup_suppressed_updates: 0,
+            recent_applied_commands: HashMap::new(),
+            loop_prevented_writes: 0,
         };
 
         if let Some(warning) = &runtime.store_warning {
@@ -151,6 +163,7 @@ impl SpikeRuntime {
             },
             "dedup": {
                 "suppressed_updates": self.dedup_suppressed_updates,
+                "loop_prevented_writes": self.loop_prevented_writes,
             },
             "matter_stack": self.stack_probe,
             "last_discovery": self.last_discovery,
@@ -171,6 +184,7 @@ impl SpikeRuntime {
             "role": format!("{:?}", self.role).to_lowercase(),
             "interview": self.interview_payload(),
             "dedup_suppressed_updates": self.dedup_suppressed_updates,
+            "loop_prevented_writes": self.loop_prevented_writes,
         });
         publisher.publish_event("plugin_metrics", &payload).await?;
         self.persist_snapshot()
@@ -195,6 +209,32 @@ impl SpikeRuntime {
         }
 
         let mapped = mapper::map_homecore_command(self.test_node_class, cmd);
+        let command_signature = command_signature(&mapped);
+        let origin = extract_origin(cmd);
+        let correlation_id = extract_correlation_id(cmd);
+
+        if self.should_prevent_bridge_loop(
+            &self.test_node_id,
+            &origin,
+            &correlation_id,
+            &command_signature,
+        ) {
+            self.loop_prevented_writes = self.loop_prevented_writes.saturating_add(1);
+            let payload = json!({
+                "phase": "loop_prevented",
+                "reason": "bridge_echo_duplicate",
+                "node_id": device_id,
+                "source_node_id": self.test_node_id,
+                "origin": origin,
+                "correlation_id": correlation_id,
+                "mapped": {
+                    "on": mapped.on,
+                    "level": mapped.level,
+                }
+            });
+            publisher.publish_event("plugin_metrics", &payload).await?;
+            return Ok(());
+        }
 
         if let Some(on) = mapped.on {
             self.on = on;
@@ -207,10 +247,20 @@ impl SpikeRuntime {
         self.publish_mapped_node_state(publisher).await?;
         self.publish_bridged_light_states(publisher).await?;
 
+        let source_node_id = self.test_node_id.clone();
+        self.record_applied_command(
+            &source_node_id,
+            command_signature,
+            origin.clone(),
+            correlation_id.clone(),
+        );
+
         let payload = json!({
             "phase": "mapped_command_roundtrip",
             "node_id": device_id,
             "source_node_id": self.test_node_id,
+            "origin": origin,
+            "correlation_id": correlation_id,
             "mapped": {
                 "on": mapped.on,
                 "level": mapped.level,
@@ -629,6 +679,54 @@ impl SpikeRuntime {
         Ok(true)
     }
 
+    fn should_prevent_bridge_loop(
+        &self,
+        source_node_id: &str,
+        origin: &str,
+        correlation_id: &Option<String>,
+        signature: &str,
+    ) -> bool {
+        if !is_bridge_origin(origin) {
+            return false;
+        }
+
+        let Some(previous) = self.recent_applied_commands.get(source_node_id) else {
+            return false;
+        };
+
+        if previous.signature != signature {
+            return false;
+        }
+
+        if !is_bridge_origin(&previous.origin) {
+            return false;
+        }
+
+        if correlation_id.is_some() && previous.correlation_id == *correlation_id {
+            return true;
+        }
+
+        previous.seen_at.elapsed() <= Duration::from_millis(1000)
+    }
+
+    fn record_applied_command(
+        &mut self,
+        source_node_id: &str,
+        signature: String,
+        origin: String,
+        correlation_id: Option<String>,
+    ) {
+        self.recent_applied_commands.insert(
+            source_node_id.to_string(),
+            RecentAppliedCommand {
+                signature,
+                origin,
+                correlation_id,
+                seen_at: Instant::now(),
+            },
+        );
+    }
+
     fn persist_snapshot(&self) -> Result<()> {
         let snapshot_path = self.storage_dir.join("spike_state.json");
         let payload = json!({
@@ -687,4 +785,32 @@ impl SpikeRuntime {
 
         Ok(())
     }
+}
+
+fn command_signature(mapped: &mapper::MappedMatterCommand) -> String {
+    format!("on={:?};level={:?}", mapped.on, mapped.level)
+}
+
+fn extract_origin(cmd: &serde_json::Value) -> String {
+    cmd.get("origin")
+        .and_then(|v| v.as_str())
+        .or_else(|| cmd.get("source").and_then(|v| v.as_str()))
+        .unwrap_or("homecore")
+        .to_string()
+}
+
+fn extract_correlation_id(cmd: &serde_json::Value) -> Option<String> {
+    cmd.get("correlation_id")
+        .and_then(|v| v.as_str())
+        .or_else(|| cmd.get("correlationId").and_then(|v| v.as_str()))
+        .or_else(|| cmd.get("trace_id").and_then(|v| v.as_str()))
+        .or_else(|| cmd.get("request_id").and_then(|v| v.as_str()))
+        .map(|s| s.to_string())
+}
+
+fn is_bridge_origin(origin: &str) -> bool {
+    origin.eq_ignore_ascii_case("matter_bridge")
+        || origin.eq_ignore_ascii_case("bridge")
+        || origin.eq_ignore_ascii_case("matter")
+        || origin.to_ascii_lowercase().contains("bridge")
 }
