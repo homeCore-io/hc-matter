@@ -23,8 +23,10 @@ product_id = 32768
 # - spike: legacy simulated commissioning path
 backend = "chip-tool"
 
-# Binary used when backend = "chip-tool"
-binary = "chip-tool"
+# Binary used when backend = "chip-tool".
+# Relative paths are resolved from this config directory, so ../bin/chip-tool
+# points at plugins/hc-matter/bin/chip-tool in standard layouts.
+binary = "../bin/chip-tool"
 
 # Timeout for external commission command execution
 timeout_secs = 90

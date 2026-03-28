@@ -1,10 +1,11 @@
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::json;
+use std::path::Path;
 use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 
 pub struct ChipToolCommissionRequest<'a> {
-    pub binary: &'a str,
+    pub binary: &'a Path,
     pub timeout_secs: u64,
     pub node_numeric_id: u64,
     pub pairing_code: Option<&'a str>,

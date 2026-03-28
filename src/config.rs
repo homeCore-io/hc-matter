@@ -146,7 +146,7 @@ fn default_commissioner_backend() -> String {
 }
 
 fn default_commissioner_binary() -> String {
-    "chip-tool".into()
+    "../bin/chip-tool".into()
 }
 
 fn default_commissioner_timeout_secs() -> u64 {
@@ -287,6 +287,25 @@ impl MatterConfig {
     pub fn resolve_backup_dir(&self, config_path: &str) -> PathBuf {
         let candidate = PathBuf::from(&self.matter.security.backup_dir);
         if candidate.is_absolute() {
+            return candidate;
+        }
+
+        let config_dir = Path::new(config_path)
+            .parent()
+            .unwrap_or_else(|| Path::new("."));
+        config_dir.join(candidate)
+    }
+
+    pub fn resolve_commissioner_binary(&self, config_path: &str) -> PathBuf {
+        let raw = self.matter.commissioner.binary.trim();
+        let candidate = PathBuf::from(raw);
+        if candidate.is_absolute() {
+            return candidate;
+        }
+
+        // Bare command names (e.g. "chip-tool") are resolved through PATH at runtime.
+        let has_path_hint = raw.starts_with(".") || raw.contains('/');
+        if !has_path_hint {
             return candidate;
         }
 

@@ -1,6 +1,7 @@
 use anyhow::Result;
 use serde_json::json;
 use std::collections::HashMap;
+use std::path::Path;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tracing::info;
@@ -28,6 +29,8 @@ pub struct SpikeRuntime {
     fabric_store: FabricStore,
     bridge_cfg: crate::config::BridgeConfig,
     commissioner_cfg: crate::config::CommissionerConfig,
+    commissioner_bin: PathBuf,
+    commissioner_warning: Option<String>,
     security_cfg: crate::config::SecurityConfig,
     commissioned_nodes: Vec<CommissionedNode>,
     store_warning: Option<String>,
@@ -72,8 +75,14 @@ impl SpikeRuntime {
     ) -> Result<Self> {
         let storage_dir = cfg.resolve_storage_dir(config_path);
         let backup_dir = cfg.resolve_backup_dir(config_path);
+        let commissioner_bin = cfg.resolve_commissioner_binary(config_path);
         let fabric_store = FabricStore::new(&storage_dir, cfg.matter.security.clone());
         let load = fabric_store.load_or_recover()?;
+
+        let commissioner_warning = commissioner_startup_warning(
+            cfg.matter.commissioner.backend.as_str(),
+            &commissioner_bin,
+        );
 
         let mut runtime = Self {
             enabled: cfg.matter.spike.enabled,
@@ -87,6 +96,8 @@ impl SpikeRuntime {
             fabric_store,
             bridge_cfg: cfg.matter.bridge.clone(),
             commissioner_cfg: cfg.matter.commissioner.clone(),
+            commissioner_bin,
+            commissioner_warning,
             security_cfg: cfg.matter.security.clone(),
             commissioned_nodes: load.nodes,
             store_warning: load.warning,
@@ -181,6 +192,12 @@ impl SpikeRuntime {
             "security": {
                 "key_provider": self.security_provider_name(),
                 "backup_dir": self.backup_dir,
+            },
+            "commissioner": {
+                "backend": self.commissioner_cfg.backend,
+                "binary": self.commissioner_bin,
+                "timeout_secs": self.commissioner_cfg.timeout_secs,
+                "warning": self.commissioner_warning,
             },
             "mapping": {
                 "test_node_class": format!("{:?}", self.test_node_class),
@@ -567,7 +584,7 @@ impl SpikeRuntime {
                         if backend == "chip-tool" {
                             let node_numeric_id = numeric_commissioner_node_id(&node_id);
                             let details = commission_with_chip_tool(&ChipToolCommissionRequest {
-                                binary: self.commissioner_cfg.binary.as_str(),
+                                binary: &self.commissioner_bin,
                                 timeout_secs: self.commissioner_cfg.timeout_secs,
                                 node_numeric_id,
                                 pairing_code: pairing_code.as_deref(),
@@ -1010,6 +1027,14 @@ impl SpikeRuntime {
             }));
         }
 
+        if let Some(warning) = &self.commissioner_warning {
+            errors.push(json!({
+                "code": "commissioner_unavailable",
+                "message": warning,
+                "action": "Run scripts/ensure-chip-tool.sh and verify matter.commissioner.binary points to a runnable executable.",
+            }));
+        }
+
         errors
     }
 
@@ -1268,6 +1293,79 @@ fn numeric_commissioner_node_id(node_id: &str) -> u64 {
 
     // Keep IDs in a practical, positive range for external commissioner tools.
     (hash % 2_000_000_000).saturating_add(1)
+}
+
+fn commissioner_startup_warning(backend: &str, binary: &Path) -> Option<String> {
+    if !backend.eq_ignore_ascii_case("chip-tool") {
+        return None;
+    }
+
+    if is_bare_command(binary) {
+        if path_lookup(binary).is_some() {
+            return None;
+        }
+        return Some(format!(
+            "chip-tool backend selected but '{}' was not found on PATH",
+            binary.display()
+        ));
+    }
+
+    if !binary.exists() {
+        return Some(format!(
+            "chip-tool backend selected but binary path does not exist: {}",
+            binary.display()
+        ));
+    }
+
+    if !is_executable_file(binary) {
+        return Some(format!(
+            "chip-tool backend selected but binary is not executable: {}",
+            binary.display()
+        ));
+    }
+
+    None
+}
+
+fn is_bare_command(path: &Path) -> bool {
+    path.components().count() == 1
+}
+
+fn path_lookup(program: &Path) -> Option<PathBuf> {
+    if program.is_absolute() {
+        return None;
+    }
+
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(program);
+        if is_executable_file(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let md = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+
+    if !md.is_file() {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        return md.permissions().mode() & 0o111 != 0;
+    }
+
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 fn command_signature(mapped: &mapper::MappedMatterCommand) -> String {
