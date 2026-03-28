@@ -20,3 +20,10 @@ product_id = 32768
 
 [matter.network]
 # interface = "eth0"
+
+[matter.spike]
+# MAT-003: set true to run commissioning/read/toggle/bridge spike behavior.
+enabled = true
+test_node_id = "matter_spike_node_1"
+bridge_endpoint_id = "matter_spike_bridge_1"
+advertise_bridge_endpoint = true

@@ -1,5 +1,6 @@
 mod config;
 mod homecore;
+mod spike;
 
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -9,6 +10,7 @@ use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 use config::MatterConfig;
+use spike::SpikeRuntime;
 
 const MAX_ATTEMPTS: u32 = 3;
 const RETRY_DELAY_SECS: u64 = 60;
@@ -107,6 +109,10 @@ async fn try_start(cfg: &MatterConfig) -> Result<()> {
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<(String, serde_json::Value)>(64);
     let mut mqtt_task = tokio::spawn(hc_client.run(cmd_tx));
 
+    let mut spike_runtime = SpikeRuntime::new(cfg, &publisher)
+        .await
+        .context("initializing MAT-003 spike runtime")?;
+
     publisher
         .register_device_typed(
             BOOTSTRAP_DEVICE_ID,
@@ -130,9 +136,19 @@ async fn try_start(cfg: &MatterConfig) -> Result<()> {
     loop {
         tokio::select! {
             maybe_cmd = cmd_rx.recv() => {
-                if maybe_cmd.is_none() {
-                    warn!("Command channel closed; terminating plugin loop");
-                    break;
+                match maybe_cmd {
+                    Some((device_id, cmd)) => {
+                        if let Err(e) = spike_runtime
+                            .handle_command(&device_id, &cmd, &publisher)
+                            .await
+                        {
+                            warn!(error = %e, device_id = %device_id, "MAT-003 spike command handling failed");
+                        }
+                    }
+                    None => {
+                        warn!("Command channel closed; terminating plugin loop");
+                        break;
+                    }
                 }
             }
             _ = heartbeat.tick() => {
@@ -150,6 +166,12 @@ async fn try_start(cfg: &MatterConfig) -> Result<()> {
 
                 if let Err(e) = publisher.publish_plugin_status("active").await {
                     warn!(error = %e, "Failed to publish heartbeat status");
+                }
+
+                if spike_runtime.enabled() {
+                    if let Err(e) = spike_runtime.on_heartbeat(&publisher).await {
+                        warn!(error = %e, "MAT-003 spike heartbeat publish failed");
+                    }
                 }
             }
             mqtt_result = &mut mqtt_task => {

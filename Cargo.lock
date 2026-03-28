@@ -170,6 +170,7 @@ name = "hc-matter"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "matter-rs",
  "rumqttc",
  "serde",
  "serde_json",
@@ -231,6 +232,12 @@ checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
 dependencies = [
  "regex-automata",
 ]
+
+[[package]]
+name = "matter-rs"
+version = "0.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "398f31328f84da605c3586d38581c629ec2ac770a7f040a1d0f8ecc08052ccc3"
 
 [[package]]
 name = "memchr"

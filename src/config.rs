@@ -34,6 +34,8 @@ pub struct MatterRuntimeConfig {
     pub commissioner: CommissionerConfig,
     #[serde(default)]
     pub network: NetworkConfig,
+    #[serde(default)]
+    pub spike: SpikeConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -56,6 +58,18 @@ pub struct CommissionerConfig {
 pub struct NetworkConfig {
     #[serde(default)]
     pub interface: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SpikeConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_spike_node_id")]
+    pub test_node_id: String,
+    #[serde(default = "default_spike_endpoint_id")]
+    pub bridge_endpoint_id: String,
+    #[serde(default)]
+    pub advertise_bridge_endpoint: bool,
 }
 
 fn default_host() -> String {
@@ -86,6 +100,14 @@ fn default_product_id() -> u16 {
     0x8000
 }
 
+fn default_spike_node_id() -> String {
+    "matter_spike_node_1".into()
+}
+
+fn default_spike_endpoint_id() -> String {
+    "matter_spike_bridge_1".into()
+}
+
 impl Default for HomecoreConfig {
     fn default() -> Self {
         Self {
@@ -105,6 +127,7 @@ impl Default for MatterRuntimeConfig {
             heartbeat_secs: default_heartbeat(),
             commissioner: CommissionerConfig::default(),
             network: NetworkConfig::default(),
+            spike: SpikeConfig::default(),
         }
     }
 }
@@ -121,6 +144,17 @@ impl Default for CommissionerConfig {
 impl Default for MatterRole {
     fn default() -> Self {
         Self::Both
+    }
+}
+
+impl Default for SpikeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            test_node_id: default_spike_node_id(),
+            bridge_endpoint_id: default_spike_endpoint_id(),
+            advertise_bridge_endpoint: true,
+        }
     }
 }
 

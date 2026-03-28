@@ -14,6 +14,31 @@ pub struct HomecorePublisher {
 }
 
 impl HomecorePublisher {
+    pub async fn publish_state(&self, device_id: &str, state: &Value) -> Result<()> {
+        let topic = format!("homecore/devices/{device_id}/state");
+        let payload = serde_json::to_vec(state)?;
+        self.client
+            .publish(&topic, QoS::AtLeastOnce, true, payload)
+            .await
+            .context("publish_state failed")
+    }
+
+    pub async fn subscribe_commands(&self, device_id: &str) -> Result<()> {
+        let topic = format!("homecore/devices/{device_id}/cmd");
+        self.client
+            .subscribe(&topic, QoS::AtLeastOnce)
+            .await
+            .context("subscribe_commands failed")
+    }
+
+    pub async fn publish_event(&self, event_type: &str, payload: &Value) -> Result<()> {
+        let topic = format!("homecore/events/{event_type}");
+        self.client
+            .publish(&topic, QoS::AtLeastOnce, false, serde_json::to_vec(payload)?)
+            .await
+            .context("publish_event failed")
+    }
+
     pub async fn register_device_typed(
         &self,
         device_id: &str,
