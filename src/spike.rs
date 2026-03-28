@@ -6,6 +6,7 @@ use tracing::info;
 use crate::config::{MatterConfig, MatterRole};
 use crate::fabric_store::{CommissionedNode, FabricStore};
 use crate::homecore::HomecorePublisher;
+use crate::mapper::{self, MatterDeviceClass};
 
 // Force linkage against the selected MAT-003 crate from the rs-matter project.
 #[cfg(feature = "matter-stack")]
@@ -22,6 +23,7 @@ pub struct SpikeRuntime {
     fabric_store: FabricStore,
     commissioned_nodes: Vec<CommissionedNode>,
     store_warning: Option<String>,
+    test_node_class: MatterDeviceClass,
     stack_probe: Option<serde_json::Value>,
     last_discovery: Option<serde_json::Value>,
     on: bool,
@@ -49,6 +51,7 @@ impl SpikeRuntime {
             fabric_store,
             commissioned_nodes: load.nodes,
             store_warning: load.warning,
+            test_node_class: MatterDeviceClass::DimmableLight,
             stack_probe: None,
             last_discovery: None,
             on: false,
@@ -109,6 +112,9 @@ impl SpikeRuntime {
                 "node_count": self.commissioned_nodes.len(),
                 "warning": self.store_warning,
             },
+            "mapping": {
+                "test_node_class": format!("{:?}", self.test_node_class),
+            },
             "matter_stack": self.stack_probe,
             "last_discovery": self.last_discovery,
         })
@@ -150,29 +156,29 @@ impl SpikeRuntime {
             return Ok(());
         }
 
-        if let Some(on) = cmd.get("on").and_then(|v| v.as_bool()) {
+        let mapped = mapper::map_homecore_command(self.test_node_class, cmd);
+
+        if let Some(on) = mapped.on {
             self.on = on;
         }
 
-        if let Some(brightness_pct) = cmd.get("brightness_pct").and_then(|v| v.as_u64()) {
-            self.brightness_pct = brightness_pct.min(100) as u8;
+        if let Some(level) = mapped.level {
+            self.brightness_pct = mapper::level_to_pct(level);
         }
 
-        publisher
-            .publish_state(
-                &self.test_node_id,
-                &json!({
-                    "on": self.on,
-                    "brightness_pct": self.brightness_pct,
-                }),
-            )
-            .await?;
+        self.publish_mapped_node_state(publisher).await?;
 
         let payload = json!({
-            "phase": "command_roundtrip",
+            "phase": "mapped_command_roundtrip",
             "node_id": self.test_node_id,
-            "on": self.on,
-            "brightness_pct": self.brightness_pct,
+            "mapped": {
+                "on": mapped.on,
+                "level": mapped.level,
+            },
+            "state": {
+                "on": self.on,
+                "brightness_pct": self.brightness_pct,
+            }
         });
         publisher.publish_event("plugin_metrics", &payload).await?;
         self.persist_snapshot()?;
@@ -203,11 +209,11 @@ impl SpikeRuntime {
                 publisher.publish_event("plugin_metrics", &payload).await?;
             }
             "read" => {
+                let mapped_state = self.current_homecore_state();
                 let payload = json!({
-                    "phase": "read_onoff_level",
+                    "phase": "read_onoff_level_mapped",
                     "node_id": self.test_node_id,
-                    "on": self.on,
-                    "brightness_pct": self.brightness_pct,
+                    "state": mapped_state,
                     "interview": self.interview_payload(),
                 });
                 publisher.publish_event("plugin_metrics", &payload).await?;
@@ -254,6 +260,10 @@ impl SpikeRuntime {
                     .filter(|v| !v.is_empty())
                     .unwrap_or_else(|| vec!["OnOff".to_string(), "LevelControl".to_string()]);
 
+                if node_id == self.test_node_id {
+                    self.test_node_class = mapper::classify_from_clusters(&clusters);
+                }
+
                 self.commissioned_nodes = self
                     .fabric_store
                     .reinterview_node(&node_id, endpoint, &clusters)?;
@@ -289,15 +299,7 @@ impl SpikeRuntime {
             }
             "toggle" => {
                 self.on = !self.on;
-                publisher
-                    .publish_state(
-                        &self.test_node_id,
-                        &json!({
-                            "on": self.on,
-                            "brightness_pct": self.brightness_pct,
-                        }),
-                    )
-                    .await?;
+                self.publish_mapped_node_state(publisher).await?;
                 let payload = json!({
                     "phase": "toggle_onoff",
                     "node_id": self.test_node_id,
@@ -374,6 +376,17 @@ impl SpikeRuntime {
         })
     }
 
+    fn current_homecore_state(&self) -> serde_json::Value {
+        let matter_attrs = mapper::synthetic_matter_attributes(self.on, self.brightness_pct);
+        mapper::map_matter_attributes(self.test_node_class, &matter_attrs)
+    }
+
+    async fn publish_mapped_node_state(&self, publisher: &HomecorePublisher) -> Result<()> {
+        publisher
+            .publish_state(&self.test_node_id, &self.current_homecore_state())
+            .await
+    }
+
     fn persist_snapshot(&self) -> Result<()> {
         let snapshot_path = self.storage_dir.join("spike_state.json");
         let payload = json!({
@@ -395,6 +408,7 @@ impl SpikeRuntime {
             1,
             &["OnOff", "LevelControl"],
         )?;
+        self.test_node_class = MatterDeviceClass::DimmableLight;
         self.store_warning = None;
         Ok(())
     }
@@ -411,15 +425,7 @@ impl SpikeRuntime {
             .await?;
         publisher.subscribe_commands(&self.test_node_id).await?;
 
-        publisher
-            .publish_state(
-                &self.test_node_id,
-                &json!({
-                    "on": self.on,
-                    "brightness_pct": self.brightness_pct,
-                }),
-            )
-            .await?;
+        self.publish_mapped_node_state(publisher).await?;
 
         let commissioned_payload = json!({
             "phase": "commission",
