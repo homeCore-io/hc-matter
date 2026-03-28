@@ -402,10 +402,47 @@ impl SpikeRuntime {
                     .filter(|s| !s.is_empty())
                     .map(|s| s.to_string());
 
-                self.commissioned_name_override = commissioned_name.clone();
-                self.commissioned_area_override = commissioned_area.clone();
+                let requested_node_id = cmd
+                    .get("node_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+
+                let endpoint = cmd
+                    .get("endpoint")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v.min(u16::MAX as u64) as u16)
+                    .unwrap_or(1);
+
+                let clusters: Vec<String> = cmd
+                    .get("clusters")
+                    .and_then(|v| v.as_array())
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|v| v.as_str())
+                            .map(|s| s.to_string())
+                            .collect::<Vec<_>>()
+                    })
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or_else(|| vec!["OnOff".to_string(), "LevelControl".to_string()]);
+
+                let node_id = requested_node_id.unwrap_or_else(|| {
+                    self.derive_commissioned_node_id(
+                        pairing_code.as_deref(),
+                        commissioned_name.as_deref(),
+                    )
+                });
+
+                if node_id == self.test_node_id {
+                    self.commissioned_name_override = commissioned_name.clone();
+                    self.commissioned_area_override = commissioned_area.clone();
+                    self.test_node_class = mapper::classify_from_clusters(&clusters);
+                }
 
                 self.last_commission_request = Some(json!({
+                    "node_id": node_id,
                     "pairing_code_present": pairing_code.is_some(),
                     "discriminator": discriminator,
                     "passcode_present": passcode.is_some(),
@@ -414,16 +451,27 @@ impl SpikeRuntime {
                 }));
 
                 self.publish_bootstrap(publisher).await?;
-                self.upsert_commissioned_node()?;
+                self.upsert_commissioned_node(&node_id, endpoint, &clusters)?;
+                self.publish_commissioned_node_registration(
+                    publisher,
+                    &node_id,
+                    commissioned_name.as_deref(),
+                    commissioned_area.as_deref(),
+                )
+                .await?;
                 let payload = json!({
                     "phase": "commission",
-                    "node_id": self.test_node_id,
+                    "node_id": node_id,
                     "result": "ok",
                     "persisted_nodes": self.commissioned_nodes.len(),
                     "commissioning": {
                         "pairing_code_present": pairing_code.is_some(),
                         "discriminator": discriminator,
                         "passcode_present": passcode.is_some(),
+                        "name": commissioned_name,
+                        "area": commissioned_area,
+                        "endpoint": endpoint,
+                        "clusters": clusters,
                     }
                 });
                 publisher.publish_event("plugin_metrics", &payload).await?;
@@ -945,14 +993,86 @@ impl SpikeRuntime {
         Ok(())
     }
 
-    fn upsert_commissioned_node(&mut self) -> Result<()> {
-        self.commissioned_nodes = self.fabric_store.upsert_node(
-            &self.test_node_id,
-            1,
-            &["OnOff", "LevelControl"],
-        )?;
-        self.test_node_class = MatterDeviceClass::DimmableLight;
+    fn upsert_commissioned_node(
+        &mut self,
+        node_id: &str,
+        endpoint: u16,
+        clusters: &[String],
+    ) -> Result<()> {
+        let cluster_refs: Vec<&str> = clusters.iter().map(|s| s.as_str()).collect();
+        self.commissioned_nodes = self
+            .fabric_store
+            .upsert_node(node_id, endpoint, &cluster_refs)?;
+        if node_id == self.test_node_id {
+            self.test_node_class = mapper::classify_from_clusters(clusters);
+        }
         self.store_warning = None;
+        Ok(())
+    }
+
+    fn derive_commissioned_node_id(
+        &self,
+        pairing_code: Option<&str>,
+        commissioned_name: Option<&str>,
+    ) -> String {
+        if let Some(code) = pairing_code {
+            let suffix: String = code
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .collect::<String>()
+                .to_lowercase();
+            if !suffix.is_empty() {
+                return self.ensure_unique_node_id(&format!("matter_node_{}", tail(&suffix, 8)));
+            }
+        }
+
+        if let Some(name) = commissioned_name {
+            let slug: String = name
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+                .collect();
+            let slug = slug.trim_matches('_');
+            if !slug.is_empty() {
+                return self.ensure_unique_node_id(&format!("matter_node_{slug}"));
+            }
+        }
+
+        self.ensure_unique_node_id("matter_node_new")
+    }
+
+    fn ensure_unique_node_id(&self, base: &str) -> String {
+        if !self.commissioned_nodes.iter().any(|n| n.node_id == base) {
+            return base.to_string();
+        }
+
+        let mut idx: u32 = 2;
+        loop {
+            let candidate = format!("{base}_{idx}");
+            if !self.commissioned_nodes.iter().any(|n| n.node_id == candidate) {
+                return candidate;
+            }
+            idx = idx.saturating_add(1);
+        }
+    }
+
+    async fn publish_commissioned_node_registration(
+        &mut self,
+        publisher: &HomecorePublisher,
+        node_id: &str,
+        name: Option<&str>,
+        area: Option<&str>,
+    ) -> Result<()> {
+        let display_name = name.unwrap_or("Matter Commissioned Node");
+        publisher
+            .register_device_typed(node_id, display_name, "light", area)
+            .await?;
+        publisher.subscribe_commands(node_id).await?;
+
+        if node_id != self.test_node_id {
+            let state = self.current_homecore_state();
+            let _ = self.publish_state_dedup(publisher, node_id, &state).await?;
+        }
+
         Ok(())
     }
 
@@ -1038,6 +1158,13 @@ fn is_bridge_origin(origin: &str) -> bool {
         || origin.eq_ignore_ascii_case("bridge")
         || origin.eq_ignore_ascii_case("matter")
         || origin.to_ascii_lowercase().contains("bridge")
+}
+
+fn tail(input: &str, max_len: usize) -> &str {
+    if input.len() <= max_len {
+        return input;
+    }
+    &input[input.len() - max_len..]
 }
 
 #[cfg(test)]
