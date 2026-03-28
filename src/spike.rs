@@ -16,6 +16,7 @@ pub struct SpikeRuntime {
     test_node_id: String,
     bridge_endpoint_id: String,
     advertise_bridge_endpoint: bool,
+    network_interface: Option<String>,
     storage_dir: PathBuf,
     stack_probe: Option<serde_json::Value>,
     last_discovery: Option<serde_json::Value>,
@@ -35,6 +36,7 @@ impl SpikeRuntime {
             test_node_id: cfg.matter.spike.test_node_id.clone(),
             bridge_endpoint_id: cfg.matter.spike.bridge_endpoint_id.clone(),
             advertise_bridge_endpoint: cfg.matter.spike.advertise_bridge_endpoint,
+            network_interface: cfg.matter.network.interface.clone(),
             storage_dir: cfg.resolve_storage_dir(config_path),
             stack_probe: None,
             last_discovery: None,
@@ -221,7 +223,12 @@ impl SpikeRuntime {
                     .map(|v| v.min(10_000) as u32)
                     .unwrap_or(2_000);
 
-                let discovery = match crate::matter_stack::discover_commissionable(timeout_ms).await {
+                let discovery = match crate::matter_stack::discover_commissionable(
+                    timeout_ms,
+                    self.network_interface.as_deref(),
+                )
+                .await
+                {
                     Ok(v) => v,
                     Err(e) => json!({
                         "ok": false,
