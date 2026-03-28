@@ -220,6 +220,54 @@ impl SpikeRuntime {
                 });
                 publisher.publish_event("plugin_metrics", &payload).await?;
             }
+            "nodes" => {
+                let payload = json!({
+                    "phase": "inventory",
+                    "count": self.commissioned_nodes.len(),
+                    "nodes": FabricStore::nodes_to_json(&self.commissioned_nodes),
+                });
+                publisher.publish_event("plugin_metrics", &payload).await?;
+            }
+            "reinterview" => {
+                let node_id = cmd
+                    .get("node_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&self.test_node_id)
+                    .to_string();
+
+                let endpoint = cmd
+                    .get("endpoint")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v.min(u16::MAX as u64) as u16)
+                    .unwrap_or(1);
+
+                let clusters: Vec<String> = cmd
+                    .get("clusters")
+                    .and_then(|v| v.as_array())
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|v| v.as_str())
+                            .map(|s| s.to_string())
+                            .collect::<Vec<_>>()
+                    })
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or_else(|| vec!["OnOff".to_string(), "LevelControl".to_string()]);
+
+                self.commissioned_nodes = self
+                    .fabric_store
+                    .reinterview_node(&node_id, endpoint, &clusters)?;
+                self.store_warning = None;
+
+                let payload = json!({
+                    "phase": "reinterview",
+                    "node_id": node_id,
+                    "endpoint": endpoint,
+                    "clusters": clusters,
+                    "persisted_nodes": self.commissioned_nodes.len(),
+                });
+                publisher.publish_event("plugin_metrics", &payload).await?;
+            }
             "toggle" => {
                 self.on = !self.on;
                 publisher

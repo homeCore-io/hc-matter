@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -64,10 +65,18 @@ impl FabricStore {
             .with_context(|| format!("reading fabric store: {}", self.path.display()))?;
 
         match serde_json::from_slice::<FabricStoreDoc>(&raw) {
-            Ok(doc) => Ok(LoadResult {
-                nodes: doc.nodes,
-                warning: None,
-            }),
+            Ok(doc) => {
+                let original_len = doc.nodes.len();
+                let mut warning = None;
+                let nodes = normalize_nodes(doc.nodes);
+
+                if nodes.len() != original_len {
+                    warning = Some("fabric store had duplicate node entries; normalized on load".to_string());
+                    self.save_nodes(&nodes)?;
+                }
+
+                Ok(LoadResult { nodes, warning })
+            }
             Err(e) => {
                 let corrupt_path = self.corrupt_path();
                 std::fs::rename(&self.path, &corrupt_path).with_context(|| {
@@ -117,6 +126,16 @@ impl FabricStore {
 
         self.save_nodes(&nodes)?;
         Ok(nodes)
+    }
+
+    pub fn reinterview_node(
+        &self,
+        node_id: &str,
+        endpoint: u16,
+        clusters: &[String],
+    ) -> Result<Vec<CommissionedNode>> {
+        let cluster_refs: Vec<&str> = clusters.iter().map(|c| c.as_str()).collect();
+        self.upsert_node(node_id, endpoint, &cluster_refs)
     }
 
     pub fn nodes_to_json(nodes: &[CommissionedNode]) -> serde_json::Value {
@@ -170,6 +189,21 @@ fn unix_now() -> u64 {
         .as_secs()
 }
 
+fn normalize_nodes(mut nodes: Vec<CommissionedNode>) -> Vec<CommissionedNode> {
+    let mut seen = HashSet::<String>::new();
+    nodes.sort_by(|a, b| b.last_interview_unix.cmp(&a.last_interview_unix));
+    let mut normalized = Vec::with_capacity(nodes.len());
+
+    for node in nodes {
+        if seen.insert(node.node_id.clone()) {
+            normalized.push(node);
+        }
+    }
+
+    normalized.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+    normalized
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,6 +229,27 @@ mod tests {
         let loaded = store.load_or_recover().unwrap();
         assert_eq!(loaded.nodes.len(), 1);
         assert!(loaded.warning.is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn upsert_updates_existing_node_without_duplicates() {
+        let dir = temp_storage_dir("no-dup");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let store = FabricStore::new(&dir);
+        store
+            .upsert_node("matter_spike_node_1", 1, &["OnOff", "LevelControl"])
+            .unwrap();
+
+        let nodes = store
+            .upsert_node("matter_spike_node_1", 2, &["OnOff", "LevelControl", "Identify"])
+            .unwrap();
+
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].endpoint, 2);
+        assert_eq!(nodes[0].clusters.len(), 3);
 
         std::fs::remove_dir_all(&dir).ok();
     }
