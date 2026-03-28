@@ -90,6 +90,16 @@ async fn try_start(cfg: &MatterConfig) -> Result<()> {
     let mut mqtt_task = tokio::spawn(hc_client.run(cmd_tx));
 
     publisher
+        .register_device_typed(
+            "matter_controller",
+            "Matter Controller",
+            "bridge",
+            None,
+        )
+        .await
+        .context("publishing bootstrap registration")?;
+
+    publisher
         .publish_plugin_status("active")
         .await
         .context("publishing startup status")?;

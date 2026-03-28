@@ -14,6 +14,31 @@ pub struct HomecorePublisher {
 }
 
 impl HomecorePublisher {
+    pub async fn register_device_typed(
+        &self,
+        device_id: &str,
+        name: &str,
+        device_type: &str,
+        area: Option<&str>,
+    ) -> Result<()> {
+        let topic = format!("homecore/plugins/{}/register", self.plugin_id);
+        let mut payload = serde_json::json!({
+            "device_id": device_id,
+            "plugin_id": self.plugin_id,
+            "name": name,
+            "device_type": device_type,
+        });
+
+        if let Some(a) = area {
+            payload["area"] = Value::String(a.to_string());
+        }
+
+        self.client
+            .publish(&topic, QoS::AtLeastOnce, false, serde_json::to_vec(&payload)?)
+            .await
+            .context("register_device_typed failed")
+    }
+
     pub async fn publish_plugin_status(&self, status: &str) -> Result<()> {
         let topic = format!("homecore/plugins/{}/status", self.plugin_id);
         self.client
