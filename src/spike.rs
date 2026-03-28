@@ -36,6 +36,8 @@ pub struct SpikeRuntime {
     stack_probe: Option<serde_json::Value>,
     last_discovery: Option<serde_json::Value>,
     last_commission_request: Option<serde_json::Value>,
+    commissioned_name_override: Option<String>,
+    commissioned_area_override: Option<String>,
     on: bool,
     brightness_pct: u8,
     contact_open: bool,
@@ -92,6 +94,8 @@ impl SpikeRuntime {
             stack_probe: None,
             last_discovery: None,
             last_commission_request: None,
+            commissioned_name_override: None,
+            commissioned_area_override: None,
             on: false,
             brightness_pct: 25,
             contact_open: false,
@@ -177,6 +181,10 @@ impl SpikeRuntime {
             },
             "mapping": {
                 "test_node_class": format!("{:?}", self.test_node_class),
+            },
+            "commissioning": {
+                "name_override": self.commissioned_name_override,
+                "area_override": self.commissioned_area_override,
             },
             "bridge": {
                 "selection": {
@@ -378,10 +386,31 @@ impl SpikeRuntime {
                     .and_then(|v| v.as_u64())
                     .map(|v| v.min(u32::MAX as u64) as u32);
 
+                let commissioned_name = cmd
+                    .get("name")
+                    .or_else(|| cmd.get("device_name"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+
+                let commissioned_area = cmd
+                    .get("area")
+                    .or_else(|| cmd.get("room"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+
+                self.commissioned_name_override = commissioned_name.clone();
+                self.commissioned_area_override = commissioned_area.clone();
+
                 self.last_commission_request = Some(json!({
                     "pairing_code_present": pairing_code.is_some(),
                     "discriminator": discriminator,
                     "passcode_present": passcode.is_some(),
+                    "name": commissioned_name,
+                    "area": commissioned_area,
                 }));
 
                 self.publish_bootstrap(publisher).await?;
@@ -598,9 +627,15 @@ impl SpikeRuntime {
         let mut candidates = vec![
             BridgeCandidate {
                 device_id: self.test_node_id.clone(),
-                name: "Matter Spike Node".to_string(),
+                name: self
+                    .commissioned_name_override
+                    .clone()
+                    .unwrap_or_else(|| "Matter Spike Node".to_string()),
                 device_type: "light".to_string(),
-                area: Some("office".to_string()),
+                area: self
+                    .commissioned_area_override
+                    .clone()
+                    .or_else(|| Some("office".to_string())),
             },
             BridgeCandidate {
                 device_id: self.contact_sensor_id.clone(),
@@ -929,7 +964,14 @@ impl SpikeRuntime {
         );
 
         publisher
-            .register_device_typed(&self.test_node_id, "Matter Spike Node", "light", None)
+            .register_device_typed(
+                &self.test_node_id,
+                self.commissioned_name_override
+                    .as_deref()
+                    .unwrap_or("Matter Spike Node"),
+                "light",
+                self.commissioned_area_override.as_deref(),
+            )
             .await?;
         publisher.subscribe_commands(&self.test_node_id).await?;
 
