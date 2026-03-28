@@ -138,6 +138,19 @@ impl FabricStore {
         self.upsert_node(node_id, endpoint, &cluster_refs)
     }
 
+    pub fn remove_node(&self, node_id: &str) -> Result<(Vec<CommissionedNode>, bool)> {
+        let mut nodes = self.load_or_recover()?.nodes;
+        let before = nodes.len();
+        nodes.retain(|n| n.node_id != node_id);
+        let removed = nodes.len() != before;
+
+        if removed {
+            self.save_nodes(&nodes)?;
+        }
+
+        Ok((nodes, removed))
+    }
+
     pub fn nodes_to_json(nodes: &[CommissionedNode]) -> serde_json::Value {
         json!(
             nodes
@@ -278,6 +291,27 @@ mod tests {
             }
         }
         assert_eq!(quarantined, 1);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn remove_node_deletes_only_target() {
+        let dir = temp_storage_dir("remove");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let store = FabricStore::new(&dir);
+        store
+            .upsert_node("matter_spike_node_1", 1, &["OnOff", "LevelControl"])
+            .unwrap();
+        store
+            .upsert_node("matter_spike_node_2", 1, &["OnOff"])
+            .unwrap();
+
+        let (nodes, removed) = store.remove_node("matter_spike_node_1").unwrap();
+        assert!(removed);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].node_id, "matter_spike_node_2");
 
         std::fs::remove_dir_all(&dir).ok();
     }

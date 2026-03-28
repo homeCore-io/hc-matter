@@ -268,6 +268,25 @@ impl SpikeRuntime {
                 });
                 publisher.publish_event("plugin_metrics", &payload).await?;
             }
+            "remove_node" | "delete_node" => {
+                let node_id = cmd
+                    .get("node_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&self.test_node_id)
+                    .to_string();
+
+                let (nodes, removed) = self.fabric_store.remove_node(&node_id)?;
+                self.commissioned_nodes = nodes;
+                self.store_warning = None;
+
+                let payload = json!({
+                    "phase": "remove_node",
+                    "node_id": node_id,
+                    "removed": removed,
+                    "persisted_nodes": self.commissioned_nodes.len(),
+                });
+                publisher.publish_event("plugin_metrics", &payload).await?;
+            }
             "toggle" => {
                 self.on = !self.on;
                 publisher
