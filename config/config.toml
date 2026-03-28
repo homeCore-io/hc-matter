@@ -1,0 +1,9 @@
+[homecore]
+broker_host = "127.0.0.1"
+broker_port = 1883
+plugin_id = "plugin.matter"
+password = ""
+
+[matter]
+# Keep plugin status fresh in HomeCore while MAT-001 is scaffold-only.
+heartbeat_secs = 30
