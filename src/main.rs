@@ -151,12 +151,10 @@ async fn try_start(cfg: &MatterConfig, config_path: &str) -> Result<()> {
         .await
         .context("subscribing controller command topic")?;
 
-    if spike_runtime.enabled() {
-        publisher
-            .publish_state(BOOTSTRAP_DEVICE_ID, &spike_runtime.controller_state())
-            .await
-            .context("publishing controller spike state")?;
-    }
+    publisher
+        .publish_state(BOOTSTRAP_DEVICE_ID, &spike_runtime.controller_state())
+        .await
+        .context("publishing controller state")?;
 
     publisher
         .publish_plugin_status(spike_runtime.plugin_status())
@@ -215,6 +213,13 @@ async fn try_start(cfg: &MatterConfig, config_path: &str) -> Result<()> {
                     if let Err(e) = spike_runtime.on_heartbeat(&publisher).await {
                         warn!(error = %e, "MAT-003 spike heartbeat publish failed");
                     }
+                }
+
+                if let Err(e) = publisher
+                    .publish_state(BOOTSTRAP_DEVICE_ID, &spike_runtime.controller_state())
+                    .await
+                {
+                    warn!(error = %e, "Failed to publish heartbeat controller state");
                 }
             }
             mqtt_result = &mut mqtt_task => {

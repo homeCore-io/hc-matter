@@ -268,17 +268,19 @@ impl SpikeRuntime {
     ) -> Result<()> {
         let started = Instant::now();
 
-        if !self.enabled {
-            return Ok(());
-        }
-
-        self.subscription_reconnects = publisher.subscription_reconnects();
-
+        // Controller actions (commission/list/reinterview/remove/discovery) should remain
+        // available even when MAT-003 spike simulation is disabled.
         if device_id == "matter_controller" {
             self.handle_controller_command(cmd, publisher).await?;
             self.record_command_latency(started.elapsed());
             return Ok(());
         }
+
+        if !self.enabled {
+            return Ok(());
+        }
+
+        self.subscription_reconnects = publisher.subscription_reconnects();
 
         if !self.is_bridged_light_endpoint(device_id) {
             return Ok(());
@@ -556,7 +558,9 @@ impl SpikeRuntime {
                         "selected_discovery": selected_discovery,
                     }));
 
-                    self.publish_bootstrap(publisher).await?;
+                    if self.enabled {
+                        self.publish_bootstrap(publisher).await?;
+                    }
                     self.upsert_commissioned_node(&node_id, endpoint, &clusters)?;
                     self.publish_commissioned_node_registration(
                         publisher,
@@ -1178,7 +1182,8 @@ impl SpikeRuntime {
             .await?;
         publisher.subscribe_commands(node_id).await?;
 
-        if node_id != self.test_node_id {
+        // Only spike mode publishes mirrored synthetic state values.
+        if self.enabled && node_id != self.test_node_id {
             let state = self.current_homecore_state();
             let _ = self.publish_state_dedup(publisher, node_id, &state).await?;
         }
