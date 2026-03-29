@@ -12,6 +12,7 @@ const __dirname = dirname(__filename);
 let logger: Logger;
 const MAX_ATTEMPTS = 3;
 const RETRY_DELAY_SECS = 60;
+const METRICS_INTERVAL_MS = 30000;
 
 /**
  * Main entry point for hc-matter plugin.
@@ -56,6 +57,36 @@ async function main(): Promise<void> {
   // Create controller and bridge (will start after WS connects)
   let controller: MatterController | null = null;
   let bridge: MatterBridge | null = null;
+  let metricsTimer: NodeJS.Timeout | null = null;
+
+  const stopMetricsTimer = () => {
+    if (metricsTimer) {
+      clearInterval(metricsTimer);
+      metricsTimer = null;
+    }
+  };
+
+  const publishPluginStatus = async (status: string, extra: Record<string, unknown> = {}) => {
+    await wsBridge.publish("homecore/plugins/matter/status", {
+      status,
+      controller_enabled: config.controller.enabled,
+      bridge_enabled: config.bridge.enabled,
+      timestamp: new Date().toISOString(),
+      ...extra,
+    });
+  };
+
+  const publishPluginMetrics = async () => {
+    if (!controller) {
+      return;
+    }
+
+    const metrics = await controller.getMetrics();
+    await wsBridge.publish("homecore/plugins/matter/metrics", {
+      ...metrics,
+      timestamp: new Date().toISOString(),
+    });
+  };
 
   // Setup lifecycle handlers
   const gracefulShutdown = async (signal: string) => {
@@ -76,6 +107,12 @@ async function main(): Promise<void> {
       }
     }
     try {
+      stopMetricsTimer();
+
+      if (wsBridge.isConnected()) {
+        await publishPluginStatus("stopping", { signal });
+      }
+
       await wsBridge.disconnect();
     } catch (error) {
       logger.error("Error disconnecting WebSocket", { error });
@@ -111,12 +148,17 @@ async function main(): Promise<void> {
       }
 
       // Publish plugin status
-      await wsBridge.publish("homecore/plugins/matter/status", {
-        status: "active",
-        controller_enabled: config.controller.enabled,
-        bridge_enabled: config.bridge.enabled,
-        timestamp: new Date().toISOString(),
-      });
+      await publishPluginStatus("active");
+      await publishPluginMetrics();
+
+      stopMetricsTimer();
+      metricsTimer = setInterval(() => {
+        publishPluginMetrics().catch((error) => {
+          logger.warn("Failed to publish plugin metrics", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }, METRICS_INTERVAL_MS);
 
       logger.info("Plugin initialized successfully");
     } catch (error) {
@@ -126,6 +168,7 @@ async function main(): Promise<void> {
   });
 
   wsBridge.on("disconnected", () => {
+    stopMetricsTimer();
     logger.warn("Disconnected from HomeCore MQTT bridge");
   });
 

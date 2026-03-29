@@ -483,6 +483,9 @@ level = "debug"
     );
 
     expect(commandResult).toBeDefined();
+    const commandPayload = (commandResult as Record<string, unknown>).payload as Record<string, unknown>;
+    expect(commandPayload.pairing_code).toBeDefined();
+    expect(commandPayload.runtime).toBeDefined();
     expect(controllerState).toBeDefined();
 
     await controller.stop();

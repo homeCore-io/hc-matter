@@ -385,7 +385,10 @@ export class MatterController {
         await this.publishCommandResult(
           action,
           "ok",
-          { pairing_code: pairingCode },
+          {
+            pairing_code: pairingCode,
+            runtime: this.matterRuntime.getCommissioningSnapshot(),
+          },
           correlationId
         );
         break;
@@ -580,12 +583,35 @@ export class MatterController {
     lastPairingCode: string | null;
     runtimeEnabled: boolean;
     runtimeDeviceId: string;
+    runtime: {
+      enabled: boolean;
+      started: boolean;
+      bootstrapDeviceId?: string;
+    };
   } {
     return {
       active: this.commissioningActive,
       lastPairingCode: this.lastCommissioningCode,
       runtimeEnabled: this.matterRuntime.isStarted(),
       runtimeDeviceId: this.runtimeDeviceId,
+      runtime: this.matterRuntime.getCommissioningSnapshot(),
+    };
+  }
+
+  async getMetrics(): Promise<{
+    commissioned_nodes: number;
+    registered_devices: number;
+    commissioning_active: boolean;
+    runtime_enabled: boolean;
+    runtime_started: boolean;
+  }> {
+    const info = this.getCommissioningInfo();
+    return {
+      commissioned_nodes: this.fabricStore.listNodes().length,
+      registered_devices: this.deviceRegistry.listAll().length,
+      commissioning_active: info.active,
+      runtime_enabled: info.runtime.enabled,
+      runtime_started: info.runtime.started,
     };
   }
 
