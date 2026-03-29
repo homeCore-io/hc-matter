@@ -380,6 +380,26 @@ export class MatterBridge {
 
     if (action === "get_endpoint") {
       const parsedEndpointId = this.parseExposedEndpointId(payload.exposed_endpoint_id);
+      if (
+        Object.prototype.hasOwnProperty.call(payload, "exposed_endpoint_id") &&
+        parsedEndpointId === undefined
+      ) {
+        this.publishBridgeCommandResult(
+          action,
+          "error",
+          {
+            code: "INVALID_ENDPOINT_ID",
+            error: "Invalid exposed_endpoint_id",
+          },
+          correlationId
+        ).catch((error) => {
+          this.logger.warn("Failed to publish get_endpoint invalid-endpoint-id result", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+        return true;
+      }
+
       const byEndpointId =
         parsedEndpointId !== undefined
           ? this.findByExposedEndpointId(parsedEndpointId)
