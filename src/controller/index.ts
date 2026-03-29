@@ -66,6 +66,8 @@ export class MatterController {
   private readonly controllerDeviceId = "matter_controller";
   private started = false;
   private bridgeHandlersAttached = false;
+  private readonly processedCommandIds: Map<string, number> = new Map();
+  private readonly commandIdTtlMs = 5 * 60 * 1000;
 
   private readonly onBridgeMessage = (msg: unknown) => this.handleMessage(msg);
   private readonly onBridgeConnected = () => {
@@ -408,6 +410,21 @@ export class MatterController {
       return;
     }
 
+    const correlationId = this.extractCorrelationId(command);
+    if (this.isDuplicateDeviceCommand(deviceId, correlationId)) {
+      await this.publishCommandResult(
+        "device_command",
+        "ok",
+        {
+          device_id: deviceId,
+          duplicate: true,
+          code: "DUPLICATE_COMMAND_IGNORED",
+        },
+        correlationId
+      );
+      return;
+    }
+
     this.logger.debug("Handling device command", { deviceId, command });
 
     if (device.homecoreType === "lock") {
@@ -475,6 +492,34 @@ export class MatterController {
       endpointId: device.endpointId,
       normalized,
     });
+  }
+
+  private isDuplicateDeviceCommand(
+    deviceId: string,
+    correlationId?: string
+  ): boolean {
+    this.pruneProcessedCommandIds();
+
+    if (!correlationId) {
+      return false;
+    }
+
+    const key = `${deviceId}:${correlationId}`;
+    if (this.processedCommandIds.has(key)) {
+      return true;
+    }
+
+    this.processedCommandIds.set(key, Date.now());
+    return false;
+  }
+
+  private pruneProcessedCommandIds(): void {
+    const now = Date.now();
+    for (const [key, timestamp] of this.processedCommandIds.entries()) {
+      if (now - timestamp > this.commandIdTtlMs) {
+        this.processedCommandIds.delete(key);
+      }
+    }
   }
 
   private async handleControllerCommand(command: Record<string, unknown>): Promise<void> {

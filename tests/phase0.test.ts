@@ -732,6 +732,105 @@ level = "debug"
     });
   });
 
+  it("should ignore duplicate device commands with same correlation_id", async () => {
+    const port = 19261;
+    const server = new WebSocketServer({ port });
+    const published: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridge = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (parsed.type === "publish") {
+          published.push(parsed);
+        }
+      });
+    });
+
+    await bridge.connect();
+
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store-dedup"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const controller = new MatterController(config, bridge, logger);
+    await controller.start();
+
+    const duplicatePayload = {
+      command: "on",
+      correlation_id: "dedup-corr-1",
+    };
+
+    for (const client of server.clients) {
+      client.send(
+        JSON.stringify({
+          type: "mqtt_message",
+          topic: "homecore/devices/matter_spike_light_1/cmd",
+          payload: duplicatePayload,
+        })
+      );
+      client.send(
+        JSON.stringify({
+          type: "mqtt_message",
+          topic: "homecore/devices/matter_spike_light_1/cmd",
+          payload: duplicatePayload,
+        })
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    const statePublishes = published.filter(
+      (msg) =>
+        msg.topic === "homecore/devices/matter_spike_light_1/state" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).on === true &&
+        (msg.payload as Record<string, unknown>).correlation_id === "dedup-corr-1"
+    );
+
+    expect(statePublishes).toHaveLength(1);
+
+    const duplicateResult = published.find(
+      (msg) =>
+        msg.topic === "homecore/plugins/matter/command_result" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).action === "device_command" &&
+        (msg.payload as Record<string, unknown>).code === "DUPLICATE_COMMAND_IGNORED" &&
+        (msg.payload as Record<string, unknown>).duplicate === true &&
+        (msg.payload as Record<string, unknown>).correlation_id === "dedup-corr-1"
+    );
+
+    expect(duplicateResult).toBeDefined();
+
+    await controller.stop();
+    await bridge.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
   it("should apply brightness commands and publish updated state", async () => {
     const port = 19114;
     const server = new WebSocketServer({ port });
