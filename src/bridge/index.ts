@@ -621,11 +621,6 @@ export class MatterBridge {
     endpoint: BridgeEndpoint,
     payload: Record<string, unknown>
   ): Record<string, unknown> | null {
-    const explicitCommand = payload.command;
-    if (explicitCommand && typeof explicitCommand === "object") {
-      return explicitCommand as Record<string, unknown>;
-    }
-
     const action = typeof payload.action === "string" ? payload.action : null;
     const value = payload.value;
     const correlationId =
@@ -642,6 +637,21 @@ export class MatterBridge {
         correlation_id: correlationId,
       };
     };
+
+    const explicitCommand = payload.command;
+    if (explicitCommand && typeof explicitCommand === "object" && !Array.isArray(explicitCommand)) {
+      const commandRecord = { ...(explicitCommand as Record<string, unknown>) };
+
+      if (
+        correlationId &&
+        typeof commandRecord.correlation_id !== "string" &&
+        typeof commandRecord.correlationId !== "string"
+      ) {
+        commandRecord.correlation_id = correlationId;
+      }
+
+      return commandRecord;
+    }
 
     switch (endpoint.homecoreType) {
       case "light":
