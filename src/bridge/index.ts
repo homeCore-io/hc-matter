@@ -11,6 +11,7 @@ import { WebSocketBridge } from "../ws-bridge.js";
 import { MatterController } from "../controller/index.js";
 
 export interface BridgeEndpoint {
+  exposedEndpointId: number;
   homecoreId: string;
   homecoreType: string;
   matterType: string;
@@ -148,6 +149,7 @@ export class MatterBridge {
     await this.wsBridge.subscribe("homecore/plugins/matter/device_registered");
     await this.wsBridge.subscribe("homecore/plugins/matter/bridge/cmd");
     await this.wsBridge.subscribe("homecore/plugins/matter/bridge/+/cmd");
+    await this.wsBridge.subscribe("homecore/plugins/matter/bridge/endpoint/+/cmd");
   }
 
   private async refreshEndpointsFromController(): Promise<void> {
@@ -160,6 +162,7 @@ export class MatterBridge {
       }
 
       this.endpoints.set(device.homecoreId, {
+        exposedEndpointId: this.stableExposedEndpointId(device.homecoreId),
         homecoreId: device.homecoreId,
         homecoreType: device.homecoreType,
         matterType: device.matterType,
@@ -389,6 +392,7 @@ export class MatterBridge {
     }
 
     this.endpoints.set(homecoreId, {
+      exposedEndpointId: this.stableExposedEndpointId(homecoreId),
       homecoreId,
       homecoreType: inferredType,
       matterType,
@@ -417,6 +421,13 @@ export class MatterBridge {
     topic: string,
     payload: Record<string, unknown>
   ): string | null {
+    const endpointTopic = topic.match(/^homecore\/plugins\/matter\/bridge\/endpoint\/(\d+)\/cmd$/);
+    if (endpointTopic) {
+      const endpointId = Number(endpointTopic[1]);
+      const endpoint = this.findByExposedEndpointId(endpointId);
+      return endpoint?.homecoreId ?? null;
+    }
+
     const direct = topic.match(/^homecore\/plugins\/matter\/bridge\/([^/]+)\/cmd$/);
     if (direct) {
       return direct[1];
@@ -435,5 +446,26 @@ export class MatterBridge {
     }
 
     return null;
+  }
+
+  private findByExposedEndpointId(endpointId: number): BridgeEndpoint | undefined {
+    for (const endpoint of this.endpoints.values()) {
+      if (endpoint.exposedEndpointId === endpointId) {
+        return endpoint;
+      }
+    }
+    return undefined;
+  }
+
+  private stableExposedEndpointId(homecoreId: string): number {
+    // FNV-1a 32-bit hash mapped to valid non-zero endpoint range.
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < homecoreId.length; i++) {
+      hash ^= homecoreId.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193);
+    }
+
+    const normalized = hash >>> 0;
+    return (normalized % 65534) + 1;
   }
 }

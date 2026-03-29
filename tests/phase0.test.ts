@@ -290,6 +290,7 @@ level = "debug"
     let endpoints = await matterBridge.getEndpoints();
     expect(endpoints).toHaveLength(1);
     expect(endpoints[0].homecoreId).toBe("matter_spike_light_1");
+    expect(endpoints[0].exposedEndpointId).toBeGreaterThan(0);
 
     const preStateMetrics = matterBridge.getMetrics();
     expect(preStateMetrics.bridge_enabled).toBe(true);
@@ -390,11 +391,16 @@ level = "debug"
     );
     await matterBridge.start();
 
+    const endpoints = await matterBridge.getEndpoints();
+    expect(endpoints).toHaveLength(1);
+    const exposedEndpointId = endpoints[0].exposedEndpointId;
+    expect(exposedEndpointId).toBeGreaterThan(0);
+
     for (const client of server.clients) {
       client.send(
         JSON.stringify({
           type: "mqtt_message",
-          topic: "homecore/plugins/matter/bridge/matter_spike_light_1/cmd",
+          topic: `homecore/plugins/matter/bridge/endpoint/${exposedEndpointId}/cmd`,
           payload: {
             action: "set_brightness",
             value: 55.6,
