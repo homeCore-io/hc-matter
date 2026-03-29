@@ -12,6 +12,37 @@ import { FabricStore } from "./fabric-store.js";
 import { DeviceRegistry, MatterDevice } from "../device-registry.js";
 import { StatePublisher } from "../state-publisher.js";
 import { MatterRuntime } from "../matter-runtime.js";
+import { z } from "zod";
+
+const ControllerActionSchema = z.enum([
+  "commission",
+  "reinterview",
+  "remove_node",
+  "status",
+  "nodes",
+]);
+
+const CommissionPayloadSchema = z.object({
+  action: z.literal("commission"),
+  passcode: z.number().int().positive().optional(),
+  discriminator: z.number().int().min(0).max(4095).optional(),
+  correlation_id: z.string().optional(),
+  correlationId: z.string().optional(),
+});
+
+const ReinterviewPayloadSchema = z.object({
+  action: z.literal("reinterview"),
+  node_id: z.string().min(1),
+  correlation_id: z.string().optional(),
+  correlationId: z.string().optional(),
+});
+
+const RemoveNodePayloadSchema = z.object({
+  action: z.literal("remove_node"),
+  node_id: z.string().min(1),
+  correlation_id: z.string().optional(),
+  correlationId: z.string().optional(),
+});
 
 export class MatterController {
   private logger: Logger;
@@ -272,7 +303,19 @@ export class MatterController {
     command: Record<string, unknown>
   ): Promise<void> {
     if (deviceId === this.controllerDeviceId) {
-      await this.handleControllerCommand(command);
+      try {
+        await this.handleControllerCommand(command);
+      } catch (error) {
+        await this.publishCommandResult(
+          typeof command.action === "string" ? command.action : "unknown",
+          "error",
+          {
+            error: error instanceof Error ? error.message : String(error),
+            code: "INVALID_CONTROLLER_COMMAND",
+          },
+          this.extractCorrelationId(command)
+        );
+      }
       return;
     }
 
@@ -305,72 +348,82 @@ export class MatterController {
   }
 
   private async handleControllerCommand(command: Record<string, unknown>): Promise<void> {
-    const action = typeof command.action === "string" ? command.action : "";
+    const action = ControllerActionSchema.parse(command.action);
+    const correlationId = this.extractCorrelationId(command);
 
     switch (action) {
       case "commission": {
-        const passcode =
-          typeof command.passcode === "number"
-            ? command.passcode
-            : this.config.passcode_default;
-        const discriminator =
-          typeof command.discriminator === "number"
-            ? command.discriminator
-            : this.config.discriminator_default;
+        const parsed = CommissionPayloadSchema.parse(command);
+        const passcode = parsed.passcode ?? this.config.passcode_default;
+        const discriminator = parsed.discriminator ?? this.config.discriminator_default;
 
         const pairingCode = await this.commission(passcode, discriminator);
-        await this.wsBridge.publish("homecore/plugins/matter/command_result", {
+        await this.publishCommandResult(
           action,
-          status: "ok",
-          pairing_code: pairingCode,
-          timestamp: new Date().toISOString(),
-        });
+          "ok",
+          { pairing_code: pairingCode },
+          correlationId
+        );
         break;
       }
       case "reinterview": {
-        const nodeId = typeof command.node_id === "string" ? command.node_id : "";
-        if (!nodeId) {
-          throw new Error("reinterview requires node_id");
-        }
-        await this.reinterview(nodeId);
-        await this.wsBridge.publish("homecore/plugins/matter/command_result", {
+        const parsed = ReinterviewPayloadSchema.parse(command);
+        await this.reinterview(parsed.node_id);
+        await this.publishCommandResult(
           action,
-          status: "ok",
-          node_id: nodeId,
-          timestamp: new Date().toISOString(),
-        });
+          "ok",
+          { node_id: parsed.node_id },
+          correlationId
+        );
         break;
       }
       case "remove_node": {
-        const nodeId = typeof command.node_id === "string" ? command.node_id : "";
-        if (!nodeId) {
-          throw new Error("remove_node requires node_id");
-        }
-        await this.removeNode(nodeId);
-        await this.wsBridge.publish("homecore/plugins/matter/command_result", {
+        const parsed = RemoveNodePayloadSchema.parse(command);
+        await this.removeNode(parsed.node_id);
+        await this.publishCommandResult(
           action,
-          status: "ok",
-          node_id: nodeId,
-          timestamp: new Date().toISOString(),
-        });
+          "ok",
+          { node_id: parsed.node_id },
+          correlationId
+        );
         break;
       }
       case "nodes":
       case "status": {
-        await this.wsBridge.publish("homecore/plugins/matter/command_result", {
+        await this.publishCommandResult(
           action,
-          status: "ok",
-          info: this.getCommissioningInfo(),
-          timestamp: new Date().toISOString(),
-        });
+          "ok",
+          { info: this.getCommissioningInfo() },
+          correlationId
+        );
         break;
-      }
-      default: {
-        this.logger.warn("Unknown matter controller action", { action, command });
       }
     }
 
     await this.publishControllerState();
+  }
+
+  private extractCorrelationId(command: Record<string, unknown>): string | undefined {
+    return (
+      (typeof command.correlation_id === "string" && command.correlation_id) ||
+      (typeof command.correlationId === "string" && command.correlationId) ||
+      undefined
+    );
+  }
+
+  private async publishCommandResult(
+    action: string,
+    status: "ok" | "error",
+    details: Record<string, unknown>,
+    correlationId?: string
+  ): Promise<void> {
+    await this.wsBridge.publish("homecore/plugins/matter/command_result", {
+      action,
+      status,
+      ...details,
+      correlation_id: correlationId,
+      timestamp: new Date().toISOString(),
+    });
   }
 
   private normalizeOnOffCommand(command: Record<string, unknown>): {
