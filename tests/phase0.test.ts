@@ -341,6 +341,111 @@ level = "debug"
     });
   });
 
+  it("should publish bridge endpoint snapshots on startup and state updates", async () => {
+    const port = 19260;
+    const server = new WebSocketServer({ port });
+    const published: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridgeWs = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (parsed.type === "publish") {
+          published.push(parsed);
+        }
+      });
+    });
+
+    await bridgeWs.connect();
+
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store-bridge-snapshot"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const controller = new MatterController(config, bridgeWs, logger);
+    await controller.start();
+
+    const matterBridge = new MatterBridge(
+      {
+        enabled: true,
+        include_ids: ["matter_spike_*"],
+        exclude_ids: [],
+      },
+      controller,
+      bridgeWs,
+      logger
+    );
+    await matterBridge.start();
+
+    const startupSnapshot = await waitForPublishedMessage(
+      published,
+      (msg) =>
+        msg.topic === "homecore/plugins/matter/bridge/endpoints" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).reason === "startup" &&
+        (msg.payload as Record<string, unknown>).count === 1,
+      700
+    );
+
+    expect(startupSnapshot).toBeDefined();
+
+    for (const client of server.clients) {
+      client.send(
+        JSON.stringify({
+          type: "mqtt_message",
+          topic: "homecore/devices/matter_spike_light_1/state",
+          payload: {
+            on: true,
+            origin: "test",
+          },
+        })
+      );
+    }
+
+    const updateSnapshot = await waitForPublishedMessage(
+      published,
+      (msg) =>
+        msg.topic === "homecore/plugins/matter/bridge/endpoints" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).reason === "state_update" &&
+        Array.isArray((msg.payload as Record<string, unknown>).endpoints) &&
+        (((msg.payload as Record<string, unknown>).endpoints as Array<Record<string, unknown>>)[0]
+          ?.last_state as Record<string, unknown> | undefined)?.on === true,
+      900
+    );
+
+    expect(updateSnapshot).toBeDefined();
+
+    await matterBridge.stop();
+    await controller.stop();
+    await bridgeWs.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
   it("should forward bridge command topics to HomeCore device cmd topics", async () => {
     const port = 19116;
     const server = new WebSocketServer({ port });

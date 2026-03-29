@@ -42,6 +42,7 @@ export class MatterBridge {
   private reconnectRestores = 0;
   private commandsForwarded = 0;
   private commandsRejected = 0;
+  private snapshotSequence = 0;
 
   private readonly onBridgeMessage = (msg: unknown) => this.handleMessage(msg);
   private readonly onBridgeConnected = () => {
@@ -84,6 +85,7 @@ export class MatterBridge {
     }
 
     await this.refreshEndpointsFromController();
+    await this.publishEndpointsSnapshot("startup");
 
     if (this.wsBridge.isConnected()) {
       await this.onReconnected();
@@ -150,6 +152,7 @@ export class MatterBridge {
     await this.wsBridge.subscribe("homecore/plugins/matter/bridge/cmd");
     await this.wsBridge.subscribe("homecore/plugins/matter/bridge/+/cmd");
     await this.wsBridge.subscribe("homecore/plugins/matter/bridge/endpoint/+/cmd");
+    await this.publishEndpointsSnapshot("reconnected");
   }
 
   private async refreshEndpointsFromController(): Promise<void> {
@@ -266,6 +269,12 @@ export class MatterBridge {
 
     endpoint.lastState = { ...payload };
     endpoint.lastUpdatedAt = new Date().toISOString();
+
+    this.publishEndpointsSnapshot("state_update").catch((error) => {
+      this.logger.warn("Failed to publish bridge endpoint snapshot after state update", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   }
 
   private async forwardBridgeCommand(
@@ -452,6 +461,36 @@ export class MatterBridge {
       clusters: Array.isArray(payload.clusters)
         ? payload.clusters.filter((item): item is number => typeof item === "number")
         : [],
+    });
+
+    this.publishEndpointsSnapshot("device_registered").catch((error) => {
+      this.logger.warn("Failed to publish bridge endpoint snapshot after registration", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
+
+  private async publishEndpointsSnapshot(reason: string): Promise<void> {
+    this.snapshotSequence++;
+
+    await this.wsBridge.publish("homecore/plugins/matter/bridge/endpoints", {
+      reason,
+      sequence: this.snapshotSequence,
+      count: this.endpoints.size,
+      endpoints: Array.from(this.endpoints.values())
+        .sort((a, b) => a.exposedEndpointId - b.exposedEndpointId)
+        .map((endpoint) => ({
+          exposed_endpoint_id: endpoint.exposedEndpointId,
+          homecore_id: endpoint.homecoreId,
+          homecore_type: endpoint.homecoreType,
+          matter_type: endpoint.matterType,
+          node_id: endpoint.nodeId,
+          endpoint_id: endpoint.endpointId,
+          clusters: endpoint.clusters,
+          last_state: endpoint.lastState,
+          last_updated_at: endpoint.lastUpdatedAt,
+        })),
+      timestamp: new Date().toISOString(),
     });
   }
 
