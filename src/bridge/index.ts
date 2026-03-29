@@ -320,8 +320,8 @@ export class MatterBridge {
       undefined;
 
     if (action === "list_endpoints") {
-      const limitRaw = typeof payload.limit === "number" ? payload.limit : 50;
-      const offsetRaw = typeof payload.offset === "number" ? payload.offset : 0;
+      const limitRaw = this.parseIntegerLike(payload.limit) ?? 50;
+      const offsetRaw = this.parseIntegerLike(payload.offset) ?? 0;
       const limit = Math.max(1, Math.min(200, Math.floor(limitRaw)));
       const offset = Math.max(0, Math.floor(offsetRaw));
       const filterType =
@@ -861,6 +861,31 @@ export class MatterBridge {
       }
 
       return Math.floor(endpointId);
+    }
+
+    return undefined;
+  }
+
+  private parseIntegerLike(value: unknown): number | undefined {
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) {
+        return undefined;
+      }
+      return Math.floor(value);
+    }
+
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (!/^-?\d+$/.test(trimmed)) {
+        return undefined;
+      }
+
+      const parsed = Number(trimmed);
+      if (!Number.isFinite(parsed)) {
+        return undefined;
+      }
+
+      return Math.floor(parsed);
     }
 
     return undefined;
