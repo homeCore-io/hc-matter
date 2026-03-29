@@ -503,6 +503,70 @@ level = "debug"
     });
   });
 
+  it("should re-subscribe and re-register when websocket reconnects", async () => {
+    const port = 19125;
+    const server = new WebSocketServer({ port });
+    const frames: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridge = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        frames.push(JSON.parse(raw.toString()) as Record<string, unknown>);
+      });
+    });
+
+    await bridge.connect();
+
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store-reconnect"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const controller = new MatterController(config, bridge, logger);
+    await controller.start();
+
+    // Reset to only inspect reconnect restoration frames.
+    frames.length = 0;
+    bridge.emit("connected");
+
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    expect(frames.some((f) => f.type === "subscribe")).toBe(true);
+    expect(frames.some((f) => f.type === "register")).toBe(true);
+    expect(
+      frames.some(
+        (f) =>
+          f.type === "publish" &&
+          f.topic === "homecore/devices/matter_controller/state"
+      )
+    ).toBe(true);
+
+    await controller.stop();
+    await bridge.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
   it("should return enriched status payload for matter_controller status action", async () => {
     const port = 19117;
     const server = new WebSocketServer({ port });

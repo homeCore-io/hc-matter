@@ -58,6 +58,7 @@ async function main(): Promise<void> {
   let controller: MatterController | null = null;
   let bridge: MatterBridge | null = null;
   let metricsTimer: NodeJS.Timeout | null = null;
+  let componentsInitialized = false;
 
   const stopMetricsTimer = () => {
     if (metricsTimer) {
@@ -129,22 +130,26 @@ async function main(): Promise<void> {
     logger.info("Connected to HomeCore MQTT bridge");
 
     try {
-      // Initialize controller if enabled
-      if (config.controller.enabled) {
-        controller = new MatterController(config.matter, wsBridge, logger);
-        await controller.start();
-      }
-
-      // Initialize bridge if enabled
-      if (config.bridge.enabled) {
-        if (!controller) {
-          logger.warn(
-            "Bridge requires controller to be enabled; skipping bridge init"
-          );
-        } else {
-          bridge = new MatterBridge(config.bridge, controller, wsBridge, logger);
-          await bridge.start();
+      if (!componentsInitialized) {
+        // Initialize controller if enabled
+        if (config.controller.enabled) {
+          controller = new MatterController(config.matter, wsBridge, logger);
+          await controller.start();
         }
+
+        // Initialize bridge if enabled
+        if (config.bridge.enabled) {
+          if (!controller) {
+            logger.warn(
+              "Bridge requires controller to be enabled; skipping bridge init"
+            );
+          } else {
+            bridge = new MatterBridge(config.bridge, controller, wsBridge, logger);
+            await bridge.start();
+          }
+        }
+
+        componentsInitialized = true;
       }
 
       // Publish plugin status

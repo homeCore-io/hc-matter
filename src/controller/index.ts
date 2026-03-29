@@ -64,6 +64,17 @@ export class MatterController {
   private runtimeDeviceId: string = "matter_runtime_light_1";
   private lastCommissioningCode: string | null = null;
   private readonly controllerDeviceId = "matter_controller";
+  private started = false;
+  private bridgeHandlersAttached = false;
+
+  private readonly onBridgeMessage = (msg: unknown) => this.handleMessage(msg);
+  private readonly onBridgeConnected = () => {
+    this.onBridgeReconnected().catch((error) => {
+      this.logger.error("Failed to restore controller subscriptions after reconnect", {
+        error,
+      });
+    });
+  };
 
   constructor(
     private config: MatterConfig,
@@ -87,6 +98,11 @@ export class MatterController {
    * Start the Matter controller
    */
   async start(): Promise<void> {
+    if (this.started) {
+      this.logger.debug("Matter controller already started; skipping duplicate start");
+      return;
+    }
+
     this.logger.info("Starting Matter controller", {
       storage_dir: this.config.storage_dir,
       instance_name: this.config.instance_name,
@@ -96,12 +112,15 @@ export class MatterController {
       // Load fabric store
       await this.fabricStore.load();
 
-      // Subscribe to HomeCore command topics
-      await this.wsBridge.subscribe("homecore/devices/+/cmd");
-      this.wsBridge.on("message", (msg: unknown) => this.handleMessage(msg));
+      if (!this.bridgeHandlersAttached) {
+        this.wsBridge.on("message", this.onBridgeMessage);
+        this.wsBridge.on("connected", this.onBridgeConnected);
+        this.bridgeHandlersAttached = true;
+      }
 
-      // Register plugin with HomeCore
-      await this.wsBridge.register("matter", ["controller", "bridge"], "1.0.0");
+      if (this.wsBridge.isConnected()) {
+        await this.onBridgeReconnected();
+      }
 
       // Best-effort real matter.js bootstrap (feature-flagged).
       await this.matterRuntime.start();
@@ -118,6 +137,7 @@ export class MatterController {
       }
 
       await this.publishControllerState();
+      this.started = true;
     } catch (error) {
       this.logger.error("Failed to start Matter controller", { error });
       throw error;
@@ -128,7 +148,17 @@ export class MatterController {
    * Stop the Matter controller
    */
   async stop(): Promise<void> {
+    if (!this.started) {
+      return;
+    }
+
     this.logger.info("Stopping Matter controller");
+
+    if (this.bridgeHandlersAttached) {
+      this.wsBridge.off("message", this.onBridgeMessage);
+      this.wsBridge.off("connected", this.onBridgeConnected);
+      this.bridgeHandlersAttached = false;
+    }
 
     await this.matterRuntime.stop();
 
@@ -138,6 +168,17 @@ export class MatterController {
     }
 
     this.logger.info("Matter controller stopped");
+    this.started = false;
+  }
+
+  private async onBridgeReconnected(): Promise<void> {
+    if (!this.started && !this.bridgeHandlersAttached) {
+      return;
+    }
+
+    await this.wsBridge.subscribe("homecore/devices/+/cmd");
+    await this.wsBridge.register("matter", ["controller", "bridge"], "1.0.0");
+    await this.publishControllerState();
   }
 
   /**
