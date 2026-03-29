@@ -44,7 +44,7 @@ export class MatterRuntime {
   private logger: Logger;
   private node: unknown | null = null;
   private lightEndpoint: unknown | null = null;
-  private bootstrapDevice: RuntimeBootstrapDevice | null = null;
+  private bootstrapDevices: RuntimeBootstrapDevice[] = [];
   private onOnOffChanged: OnOffChangedHandler | null = null;
   private onBrightnessChanged: BrightnessChangedHandler | null = null;
   private runPromise: Promise<void> | null = null;
@@ -66,7 +66,11 @@ export class MatterRuntime {
   }
 
   getBootstrapDevice(): RuntimeBootstrapDevice | null {
-    return this.bootstrapDevice;
+    return this.bootstrapDevices[0] ?? null;
+  }
+
+  getBootstrapDevices(): RuntimeBootstrapDevice[] {
+    return [...this.bootstrapDevices];
   }
 
   getCommissioningSnapshot(): RuntimeCommissioningSnapshot {
@@ -77,7 +81,7 @@ export class MatterRuntime {
     return {
       enabled: runtimeEnabled,
       started: this.started,
-      bootstrapDeviceId: this.bootstrapDevice?.homecoreId,
+      bootstrapDeviceId: this.bootstrapDevices[0]?.homecoreId,
       lastPairingCode: this.lastPairingCode ?? undefined,
       lastDiscriminator: this.lastDiscriminator ?? undefined,
     };
@@ -108,14 +112,32 @@ export class MatterRuntime {
 
     // Deterministic runtime simulation path for tests/CI when full matter.js startup is unavailable.
     if (process.env.HC_MATTER_SIMULATE_RUNTIME === "1") {
-      this.bootstrapDevice = {
-        nodeId: "runtime-node-1",
-        endpointId: 1,
-        homecoreId: "matter_runtime_light_1",
-        homecoreType: "light",
-        matterType: "OnOffLight",
-        clusters: [6],
-      };
+      this.bootstrapDevices = [
+        {
+          nodeId: "runtime-node-1",
+          endpointId: 1,
+          homecoreId: "matter_runtime_light_1",
+          homecoreType: "light",
+          matterType: "OnOffLight",
+          clusters: [6, 8],
+        },
+        {
+          nodeId: "runtime-node-1",
+          endpointId: 2,
+          homecoreId: "matter_runtime_lock_1",
+          homecoreType: "lock",
+          matterType: "DoorLock",
+          clusters: [257],
+        },
+        {
+          nodeId: "runtime-node-1",
+          endpointId: 3,
+          homecoreId: "matter_runtime_cover_1",
+          homecoreType: "cover",
+          matterType: "WindowCovering",
+          clusters: [258],
+        },
+      ];
       this.node = {};
       this.lightEndpoint = {};
       this.started = true;
@@ -170,14 +192,16 @@ export class MatterRuntime {
 
       this.node = node;
       this.lightEndpoint = lightEndpoint;
-      this.bootstrapDevice = {
-        nodeId: "runtime-node-1",
-        endpointId: endpointNumber,
-        homecoreId: "matter_runtime_light_1",
-        homecoreType: "light",
-        matterType: "OnOffLight",
-        clusters: [6],
-      };
+      this.bootstrapDevices = [
+        {
+          nodeId: "runtime-node-1",
+          endpointId: endpointNumber,
+          homecoreId: "matter_runtime_light_1",
+          homecoreType: "light",
+          matterType: "OnOffLight",
+          clusters: [6, 8],
+        },
+      ];
 
       this.installOnOffChangeListener(lightEndpoint);
       this.installLevelChangeListener(lightEndpoint);
@@ -335,7 +359,7 @@ export class MatterRuntime {
   async stop(): Promise<void> {
     if (!this.node) {
       this.started = false;
-      this.bootstrapDevice = null;
+      this.bootstrapDevices = [];
       return;
     }
 
@@ -357,7 +381,7 @@ export class MatterRuntime {
     } finally {
       this.node = null;
       this.lightEndpoint = null;
-      this.bootstrapDevice = null;
+      this.bootstrapDevices = [];
       this.runPromise = null;
       this.started = false;
       this.lastPairingCode = null;
@@ -376,11 +400,11 @@ export class MatterRuntime {
    * Returns true when runtime accepted the request for a known runtime node.
    */
   async reinterviewNode(nodeId: string): Promise<boolean> {
-    if (!this.started || !this.bootstrapDevice) {
+    if (!this.started || this.bootstrapDevices.length === 0) {
       return false;
     }
 
-    if (nodeId !== this.bootstrapDevice.nodeId) {
+    if (!this.bootstrapDevices.some((device) => device.nodeId === nodeId)) {
       return false;
     }
 
@@ -394,17 +418,19 @@ export class MatterRuntime {
    * Returns true when runtime accepted the request for a known runtime node.
    */
   async removeNode(nodeId: string): Promise<boolean> {
-    if (!this.started || !this.bootstrapDevice) {
+    if (!this.started || this.bootstrapDevices.length === 0) {
       return false;
     }
 
-    if (nodeId !== this.bootstrapDevice.nodeId) {
+    if (!this.bootstrapDevices.some((device) => device.nodeId === nodeId)) {
       return false;
     }
 
     // Phase 1 placeholder for concrete matter.js fabric removal operations.
     this.lightEndpoint = null;
-    this.bootstrapDevice = null;
+    this.bootstrapDevices = this.bootstrapDevices.filter(
+      (device) => device.nodeId !== nodeId
+    );
     this.logger.info("Matter runtime remove node request accepted", { nodeId });
     return true;
   }

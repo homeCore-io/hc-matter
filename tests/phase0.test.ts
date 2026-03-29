@@ -2014,6 +2014,48 @@ level = "debug"
     }
   });
 
+  it("should bootstrap multiple runtime device types in simulation mode", async () => {
+    const previousSimulate = process.env.HC_MATTER_SIMULATE_RUNTIME;
+    process.env.HC_MATTER_SIMULATE_RUNTIME = "1";
+
+    try {
+      const logger = new Logger("test");
+      const config = {
+        storage_dir: path.join(testDir, "matter-store-runtime-multi-device"),
+        security_provider: "plaintext" as const,
+        security_key_env_var: "HC_MATTER_STORE_KEY",
+        instance_name: "TestCore",
+        passcode_default: 12345678,
+        discriminator_default: 3840,
+      };
+
+      const bridge = new WebSocketBridge("ws://localhost:9999", {
+        maxReconnectAttempts: 0,
+      });
+
+      const controller = new MatterController(config, bridge, logger);
+      await controller.start();
+
+      const devices = await controller.getDevices();
+      const runtimeDevices = devices.filter((d) =>
+        d.homecoreId.startsWith("matter_runtime_")
+      );
+
+      expect(runtimeDevices.length).toBeGreaterThanOrEqual(3);
+      expect(runtimeDevices.some((d) => d.homecoreType === "light")).toBe(true);
+      expect(runtimeDevices.some((d) => d.homecoreType === "lock")).toBe(true);
+      expect(runtimeDevices.some((d) => d.homecoreType === "cover")).toBe(true);
+
+      await controller.stop();
+    } finally {
+      if (previousSimulate === undefined) {
+        delete process.env.HC_MATTER_SIMULATE_RUNTIME;
+      } else {
+        process.env.HC_MATTER_SIMULATE_RUNTIME = previousSimulate;
+      }
+    }
+  });
+
   it("should return enriched status payload for matter_controller status action", async () => {
     const port = 19117;
     const server = new WebSocketServer({ port });

@@ -143,7 +143,7 @@ export class MatterController {
       });
 
       // Bootstrap device registration/state source.
-      if (!(await this.bootstrapRuntimeOnOffDevice())) {
+      if (!(await this.bootstrapRuntimeDevices())) {
         // Fallback for spike mode when runtime is disabled/unavailable.
         this.bootstrapOnOffSpikeDevice();
       }
@@ -806,44 +806,72 @@ export class MatterController {
       });
   }
 
-  private async bootstrapRuntimeOnOffDevice(): Promise<boolean> {
-    const runtimeDevice = this.matterRuntime.getBootstrapDevice();
-    if (!runtimeDevice) {
+  private async bootstrapRuntimeDevices(): Promise<boolean> {
+    const runtimeDevices = this.matterRuntime.getBootstrapDevices();
+    if (runtimeDevices.length === 0) {
       return false;
     }
 
-    this.runtimeDeviceId = runtimeDevice.homecoreId;
+    const runtimeLight = runtimeDevices.find((device) => device.homecoreType === "light");
+    this.runtimeDeviceId = runtimeLight?.homecoreId ?? runtimeDevices[0].homecoreId;
 
-    this.registerDevice(runtimeDevice.nodeId, {
-      nodeId: runtimeDevice.nodeId,
-      endpointId: runtimeDevice.endpointId,
-      matterType: runtimeDevice.matterType,
-      homecoreId: runtimeDevice.homecoreId,
-      homecoreType: runtimeDevice.homecoreType,
-      clusters: runtimeDevice.clusters,
-    });
-
-    if (!this.fabricStore.getNode(runtimeDevice.nodeId)) {
-      this.fabricStore.registerNode(runtimeDevice.nodeId, {
-        [runtimeDevice.endpointId]: {
-          id: runtimeDevice.endpointId,
-          clusters: runtimeDevice.clusters.reduce<Record<number, { id: number; attributes: Record<number, unknown> }>>((acc, clusterId) => {
-            acc[clusterId] = { id: clusterId, attributes: {} };
-            return acc;
-          }, {}),
-        },
+    for (const runtimeDevice of runtimeDevices) {
+      this.registerDevice(runtimeDevice.nodeId, {
+        nodeId: runtimeDevice.nodeId,
+        endpointId: runtimeDevice.endpointId,
+        matterType: runtimeDevice.matterType,
+        homecoreId: runtimeDevice.homecoreId,
+        homecoreType: runtimeDevice.homecoreType,
+        clusters: runtimeDevice.clusters,
       });
 
-      await this.fabricStore.save();
+      const existingNode = this.fabricStore.getNode(runtimeDevice.nodeId);
+      const endpointClusters = runtimeDevice.clusters.reduce<
+        Record<number, { id: number; attributes: Record<number, unknown> }>
+      >((acc, clusterId) => {
+        acc[clusterId] = { id: clusterId, attributes: {} };
+        return acc;
+      }, {});
+
+      if (!existingNode) {
+        this.fabricStore.registerNode(runtimeDevice.nodeId, {
+          [runtimeDevice.endpointId]: {
+            id: runtimeDevice.endpointId,
+            clusters: endpointClusters,
+          },
+        });
+      } else {
+        this.fabricStore.updateNodeEndpoints(runtimeDevice.nodeId, {
+          ...existingNode.endpoints,
+          [runtimeDevice.endpointId]: {
+            id: runtimeDevice.endpointId,
+            clusters: endpointClusters,
+          },
+        });
+      }
+
+      const initialState = this.initialStateForRuntimeDevice(runtimeDevice.homecoreType);
+      this.statePublisher
+        .publishState(runtimeDevice.homecoreId, initialState, { origin: "matter_runtime" })
+        .catch((error) => {
+          this.logger.error("Failed to publish runtime bootstrap state", { error });
+        });
     }
 
-    this.statePublisher
-      .publishState(runtimeDevice.homecoreId, { on: false }, { origin: "matter_runtime" })
-      .catch((error) => {
-        this.logger.error("Failed to publish runtime bootstrap state", { error });
-      });
+    await this.fabricStore.save();
 
     return true;
+  }
+
+  private initialStateForRuntimeDevice(homecoreType: string): Record<string, unknown> {
+    switch (homecoreType) {
+      case "lock":
+        return { locked: true };
+      case "cover":
+        return { position: 0 };
+      default:
+        return { on: false, brightness_pct: 0 };
+    }
   }
 
   /**
