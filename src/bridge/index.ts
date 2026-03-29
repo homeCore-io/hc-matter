@@ -272,10 +272,25 @@ export class MatterBridge {
     deviceId: string,
     payload: Record<string, unknown>
   ): Promise<void> {
+    const correlationId =
+      (typeof payload.correlation_id === "string" && payload.correlation_id) ||
+      (typeof payload.correlationId === "string" && payload.correlationId) ||
+      undefined;
+
     const endpoint = this.endpoints.get(deviceId);
     if (!endpoint) {
       this.commandsRejected++;
       this.logger.warn("Bridge command ignored for unknown endpoint", { deviceId });
+      await this.publishBridgeCommandResult(
+        "bridge_forward",
+        "error",
+        {
+          device_id: deviceId,
+          code: "ENDPOINT_NOT_FOUND",
+          error: "Bridge endpoint not found",
+        },
+        correlationId
+      );
       return;
     }
 
@@ -286,6 +301,16 @@ export class MatterBridge {
         deviceId,
         payload,
       });
+      await this.publishBridgeCommandResult(
+        "bridge_forward",
+        "error",
+        {
+          device_id: deviceId,
+          code: "UNSUPPORTED_BRIDGE_COMMAND",
+          error: "Unsupported bridge command payload",
+        },
+        correlationId
+      );
       return;
     }
 
@@ -296,6 +321,32 @@ export class MatterBridge {
     });
 
     this.commandsForwarded++;
+
+    await this.publishBridgeCommandResult(
+      "bridge_forward",
+      "ok",
+      {
+        device_id: deviceId,
+        forwarded_topic: `homecore/devices/${deviceId}/cmd`,
+      },
+      correlationId
+    );
+  }
+
+  private async publishBridgeCommandResult(
+    action: string,
+    status: "ok" | "error",
+    details: Record<string, unknown>,
+    correlationId?: string
+  ): Promise<void> {
+    await this.wsBridge.publish("homecore/plugins/matter/command_result", {
+      action,
+      status,
+      source: "matter_bridge",
+      correlation_id: correlationId,
+      timestamp: new Date().toISOString(),
+      ...details,
+    });
   }
 
   private translateBridgeCommand(
@@ -425,7 +476,12 @@ export class MatterBridge {
     if (endpointTopic) {
       const endpointId = Number(endpointTopic[1]);
       const endpoint = this.findByExposedEndpointId(endpointId);
-      return endpoint?.homecoreId ?? null;
+      if (endpoint) {
+        return endpoint.homecoreId;
+      }
+
+      // Preserve routing into rejection handling so command_result reports endpoint-not-found.
+      return `endpoint_${endpointId}`;
     }
 
     const direct = topic.match(/^homecore\/plugins\/matter\/bridge\/([^/]+)\/cmd$/);
