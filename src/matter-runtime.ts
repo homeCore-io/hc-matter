@@ -42,6 +42,14 @@ export interface RuntimeNodeSnapshot {
   endpoints: RuntimeBootstrapDevice[];
 }
 
+interface RuntimeInterviewEndpoint {
+  endpointId: number;
+  homecoreId: string;
+  homecoreType: string;
+  matterType: string;
+  clusters: number[];
+}
+
 type OnOffChangedHandler = (on: boolean) => Promise<void> | void;
 type BrightnessChangedHandler = (brightnessPct: number) => Promise<void> | void;
 
@@ -445,7 +453,21 @@ export class MatterRuntime {
       return false;
     }
 
-    // Phase 1 placeholder for concrete matter.js endpoint/cluster refresh operations.
+    const interviewedEndpoints = await this.tryInterviewNodeEndpoints(nodeId);
+    if (interviewedEndpoints && interviewedEndpoints.length > 0) {
+      this.bootstrapDevices = [
+        ...this.bootstrapDevices.filter((device) => device.nodeId !== nodeId),
+        ...interviewedEndpoints.map((endpoint) => ({
+          nodeId,
+          endpointId: endpoint.endpointId,
+          homecoreId: endpoint.homecoreId,
+          homecoreType: endpoint.homecoreType,
+          matterType: endpoint.matterType,
+          clusters: [...endpoint.clusters],
+        })),
+      ].sort((a, b) => a.endpointId - b.endpointId);
+    }
+
     this.logger.info("Matter runtime reinterview request accepted", { nodeId });
     return true;
   }
@@ -463,7 +485,8 @@ export class MatterRuntime {
       return false;
     }
 
-    // Phase 1 placeholder for concrete matter.js fabric removal operations.
+    await this.tryRemoveNodeFromRuntime(nodeId);
+
     this.lightEndpoint = null;
     this.bootstrapDevices = this.bootstrapDevices.filter(
       (device) => device.nodeId !== nodeId
@@ -569,5 +592,121 @@ export class MatterRuntime {
     return this.bootstrapDevices.some(
       (device) => device.homecoreId === homecoreId && device.homecoreType === homecoreType
     );
+  }
+
+  private async tryInterviewNodeEndpoints(
+    nodeId: string
+  ): Promise<RuntimeInterviewEndpoint[] | null> {
+    if (!this.node) {
+      return null;
+    }
+
+    const runtimeNode = this.node as {
+      reinterviewNode?: (nodeId: string) => Promise<unknown>;
+      interviewNode?: (nodeId: string) => Promise<unknown>;
+      getNodeSnapshot?: (nodeId: string) => Promise<unknown>;
+    };
+
+    const interviewResult =
+      (typeof runtimeNode.reinterviewNode === "function" &&
+        (await runtimeNode.reinterviewNode(nodeId))) ||
+      (typeof runtimeNode.interviewNode === "function" &&
+        (await runtimeNode.interviewNode(nodeId))) ||
+      (typeof runtimeNode.getNodeSnapshot === "function" &&
+        (await runtimeNode.getNodeSnapshot(nodeId))) ||
+      null;
+
+    if (!interviewResult || typeof interviewResult !== "object") {
+      return null;
+    }
+
+    const resultRecord = interviewResult as Record<string, unknown>;
+    const rawEndpoints = resultRecord.endpoints;
+    if (!Array.isArray(rawEndpoints)) {
+      return null;
+    }
+
+    const parsed = rawEndpoints
+      .map((endpoint): RuntimeInterviewEndpoint | null => {
+        if (!endpoint || typeof endpoint !== "object") {
+          return null;
+        }
+
+        const raw = endpoint as Record<string, unknown>;
+        const endpointId =
+          typeof raw.endpointId === "number"
+            ? Math.floor(raw.endpointId)
+            : typeof raw.endpoint_id === "number"
+              ? Math.floor(raw.endpoint_id)
+              : null;
+
+        const homecoreId =
+          (typeof raw.homecoreId === "string" && raw.homecoreId) ||
+          (typeof raw.homecore_id === "string" && raw.homecore_id) ||
+          null;
+
+        const homecoreType =
+          (typeof raw.homecoreType === "string" && raw.homecoreType) ||
+          (typeof raw.homecore_type === "string" && raw.homecore_type) ||
+          null;
+
+        const matterType =
+          (typeof raw.matterType === "string" && raw.matterType) ||
+          (typeof raw.matter_type === "string" && raw.matter_type) ||
+          null;
+
+        const clustersRaw = raw.clusters;
+        const clusters = Array.isArray(clustersRaw)
+          ? clustersRaw.filter((cluster): cluster is number => typeof cluster === "number")
+          : [];
+
+        if (
+          endpointId === null ||
+          endpointId < 1 ||
+          !homecoreId ||
+          !homecoreType ||
+          !matterType
+        ) {
+          return null;
+        }
+
+        return {
+          endpointId,
+          homecoreId,
+          homecoreType,
+          matterType,
+          clusters,
+        };
+      })
+      .filter((endpoint): endpoint is RuntimeInterviewEndpoint => endpoint !== null);
+
+    return parsed;
+  }
+
+  private async tryRemoveNodeFromRuntime(nodeId: string): Promise<void> {
+    if (!this.node) {
+      return;
+    }
+
+    try {
+      const runtimeNode = this.node as {
+        removeNode?: (nodeId: string) => Promise<unknown>;
+        unpairNode?: (nodeId: string) => Promise<unknown>;
+      };
+
+      if (typeof runtimeNode.removeNode === "function") {
+        await runtimeNode.removeNode(nodeId);
+        return;
+      }
+
+      if (typeof runtimeNode.unpairNode === "function") {
+        await runtimeNode.unpairNode(nodeId);
+      }
+    } catch (error) {
+      this.logger.warn("Runtime remove node attempt failed; continuing with local cleanup", {
+        error: error instanceof Error ? error.message : String(error),
+        nodeId,
+      });
+    }
   }
 }

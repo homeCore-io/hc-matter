@@ -210,6 +210,34 @@ level = "debug"
     }
   });
 
+  it("should reinterview and remove runtime node in simulation mode", async () => {
+    const previousSimulate = process.env.HC_MATTER_SIMULATE_RUNTIME;
+    process.env.HC_MATTER_SIMULATE_RUNTIME = "1";
+
+    try {
+      const runtime = new MatterRuntime(new Logger("test"));
+      await runtime.start();
+
+      expect(await runtime.reinterviewNode("runtime-node-1")).toBe(true);
+      expect(runtime.getNodeSnapshot("runtime-node-1")?.endpoints).toHaveLength(3);
+
+      expect(await runtime.removeNode("runtime-node-1")).toBe(true);
+      expect(runtime.getNodeSnapshot("runtime-node-1")).toBeNull();
+
+      // Once removed, runtime should reject further lifecycle operations for that node.
+      expect(await runtime.reinterviewNode("runtime-node-1")).toBe(false);
+      expect(await runtime.removeNode("runtime-node-1")).toBe(false);
+
+      await runtime.stop();
+    } finally {
+      if (previousSimulate === undefined) {
+        delete process.env.HC_MATTER_SIMULATE_RUNTIME;
+      } else {
+        process.env.HC_MATTER_SIMULATE_RUNTIME = previousSimulate;
+      }
+    }
+  });
+
   it("should generate valid pairing codes", async () => {
     const logger = new Logger("test");
     const storePath = path.join(testDir, "fabric_store_pairing.json");
