@@ -31,6 +31,12 @@ export interface RuntimeCommissioningResult {
   runtimeApplied: boolean;
 }
 
+export interface RuntimeSubscriptionMetrics {
+  reattachAttempts: number;
+  reattachSuccesses: number;
+  reattachFailures: number;
+}
+
 type OnOffChangedHandler = (on: boolean) => Promise<void> | void;
 
 export class MatterRuntime {
@@ -43,6 +49,11 @@ export class MatterRuntime {
   private started = false;
   private lastPairingCode: string | null = null;
   private lastDiscriminator: number | null = null;
+  private subscriptionMetrics: RuntimeSubscriptionMetrics = {
+    reattachAttempts: 0,
+    reattachSuccesses: 0,
+    reattachFailures: 0,
+  };
 
   constructor(parentLogger: Logger) {
     this.logger = parentLogger.child("matter-runtime");
@@ -72,6 +83,12 @@ export class MatterRuntime {
 
   setOnOffChangedHandler(handler: OnOffChangedHandler): void {
     this.onOnOffChanged = handler;
+  }
+
+  getSubscriptionMetrics(): RuntimeSubscriptionMetrics {
+    return {
+      ...this.subscriptionMetrics,
+    };
   }
 
   /**
@@ -307,6 +324,11 @@ export class MatterRuntime {
       this.started = false;
       this.lastPairingCode = null;
       this.lastDiscriminator = null;
+      this.subscriptionMetrics = {
+        reattachAttempts: 0,
+        reattachSuccesses: 0,
+        reattachFailures: 0,
+      };
       this.logger.info("Matter runtime stopped");
     }
   }
@@ -347,6 +369,24 @@ export class MatterRuntime {
     this.bootstrapDevice = null;
     this.logger.info("Matter runtime remove node request accepted", { nodeId });
     return true;
+  }
+
+  async reattachSubscriptions(): Promise<boolean> {
+    this.subscriptionMetrics.reattachAttempts++;
+
+    if (!this.started || !this.lightEndpoint) {
+      this.subscriptionMetrics.reattachFailures++;
+      return false;
+    }
+
+    try {
+      this.installOnOffChangeListener(this.lightEndpoint);
+      this.subscriptionMetrics.reattachSuccesses++;
+      return true;
+    } catch (_error) {
+      this.subscriptionMetrics.reattachFailures++;
+      return false;
+    }
   }
 
   /**

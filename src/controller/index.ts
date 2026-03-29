@@ -178,6 +178,14 @@ export class MatterController {
 
     await this.wsBridge.subscribe("homecore/devices/+/cmd");
     await this.wsBridge.register("matter", ["controller", "bridge"], "1.0.0");
+
+    if (this.matterRuntime.isStarted()) {
+      const reattached = await this.matterRuntime.reattachSubscriptions();
+      this.logger.info("Runtime subscription restore attempt completed", {
+        reattached,
+      });
+    }
+
     await this.publishControllerState();
   }
 
@@ -651,14 +659,24 @@ export class MatterController {
     commissioning_active: boolean;
     runtime_enabled: boolean;
     runtime_started: boolean;
+    runtime_subscription_reattach_attempts: number;
+    runtime_subscription_reattach_successes: number;
+    runtime_subscription_reattach_failures: number;
   }> {
     const info = this.getCommissioningInfo();
+    const runtimeSubscriptionMetrics = this.matterRuntime.getSubscriptionMetrics();
     return {
       commissioned_nodes: this.fabricStore.listNodes().length,
       registered_devices: this.deviceRegistry.listAll().length,
       commissioning_active: info.active,
       runtime_enabled: info.runtime.enabled,
       runtime_started: info.runtime.started,
+      runtime_subscription_reattach_attempts:
+        runtimeSubscriptionMetrics.reattachAttempts,
+      runtime_subscription_reattach_successes:
+        runtimeSubscriptionMetrics.reattachSuccesses,
+      runtime_subscription_reattach_failures:
+        runtimeSubscriptionMetrics.reattachFailures,
     };
   }
 

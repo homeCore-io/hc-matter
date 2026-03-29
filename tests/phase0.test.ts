@@ -554,6 +554,11 @@ level = "debug"
       )
     ).toBe(true);
 
+    const metrics = await controller.getMetrics();
+    expect(metrics.runtime_subscription_reattach_attempts).toBe(0);
+    expect(metrics.runtime_subscription_reattach_successes).toBe(0);
+    expect(metrics.runtime_subscription_reattach_failures).toBe(0);
+
     await controller.stop();
     await bridge.disconnect();
     await new Promise<void>((resolve, reject) => {
@@ -565,6 +570,79 @@ level = "debug"
         }
       });
     });
+  });
+
+  it("should reattach runtime subscriptions on reconnect when runtime simulation is enabled", async () => {
+    const previousSimulate = process.env.HC_MATTER_SIMULATE_RUNTIME;
+    process.env.HC_MATTER_SIMULATE_RUNTIME = "1";
+
+    try {
+      const port = 19126;
+      const server = new WebSocketServer({ port });
+      const frames: Array<Record<string, unknown>> = [];
+
+      await new Promise<void>((resolve) => {
+        server.on("listening", () => resolve());
+      });
+
+      const bridge = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+        reconnectDelayMs: 50,
+        maxReconnectAttempts: 1,
+      });
+
+      server.on("connection", (socket) => {
+        socket.on("message", (raw) => {
+          frames.push(JSON.parse(raw.toString()) as Record<string, unknown>);
+        });
+      });
+
+      await bridge.connect();
+
+      const logger = new Logger("test");
+      const config = {
+        storage_dir: path.join(testDir, "matter-store-reconnect-runtime-sim"),
+        security_provider: "plaintext" as const,
+        security_key_env_var: "HC_MATTER_STORE_KEY",
+        instance_name: "TestCore",
+        passcode_default: 12345678,
+        discriminator_default: 3840,
+      };
+
+      const controller = new MatterController(config, bridge, logger);
+      await controller.start();
+
+      // Reset to only inspect reconnect restoration frames.
+      frames.length = 0;
+      bridge.emit("connected");
+
+      await new Promise((resolve) => setTimeout(resolve, 120));
+
+      const metrics = await controller.getMetrics();
+      expect(metrics.runtime_subscription_reattach_attempts).toBeGreaterThanOrEqual(1);
+      expect(metrics.runtime_subscription_reattach_successes).toBeGreaterThanOrEqual(1);
+      expect(metrics.runtime_subscription_reattach_failures).toBe(0);
+
+      expect(frames.some((f) => f.type === "subscribe")).toBe(true);
+      expect(frames.some((f) => f.type === "register")).toBe(true);
+
+      await controller.stop();
+      await bridge.disconnect();
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve();
+          }
+        });
+      });
+    } finally {
+      if (previousSimulate === undefined) {
+        delete process.env.HC_MATTER_SIMULATE_RUNTIME;
+      } else {
+        process.env.HC_MATTER_SIMULATE_RUNTIME = previousSimulate;
+      }
+    }
   });
 
   it("should return enriched status payload for matter_controller status action", async () => {
