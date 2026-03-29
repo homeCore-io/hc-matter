@@ -396,4 +396,87 @@ level = "debug"
     expect(after.lastPairingCode).toBe("12345678-3840");
     expect(after.runtimeDeviceId).toBeDefined();
   });
+
+  it("should handle matter_controller commission action and publish controller state", async () => {
+    const port = 19114;
+    const server = new WebSocketServer({ port });
+    const published: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridge = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (parsed.type === "publish") {
+          published.push(parsed);
+        }
+      });
+    });
+
+    await bridge.connect();
+
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store-controller-actions"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const controller = new MatterController(config, bridge, logger);
+    await controller.start();
+
+    for (const client of server.clients) {
+      client.send(
+        JSON.stringify({
+          type: "mqtt_message",
+          topic: "homecore/devices/matter_controller/cmd",
+          payload: { action: "commission", passcode: 12345678, discriminator: 3840 },
+        })
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const commandResult = published.find(
+      (msg) =>
+        msg.topic === "homecore/plugins/matter/command_result" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).action === "commission" &&
+        (msg.payload as Record<string, unknown>).status === "ok"
+    );
+
+    const controllerState = published.find(
+      (msg) =>
+        msg.topic === "homecore/devices/matter_controller/state" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        Array.isArray((msg.payload as Record<string, unknown>).commissioned_nodes)
+    );
+
+    expect(commandResult).toBeDefined();
+    expect(controllerState).toBeDefined();
+
+    await controller.stop();
+    await bridge.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
 });

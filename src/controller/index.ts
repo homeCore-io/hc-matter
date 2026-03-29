@@ -22,6 +22,7 @@ export class MatterController {
   private commissioningActive = false;
   private runtimeDeviceId: string = "matter_runtime_light_1";
   private lastCommissioningCode: string | null = null;
+  private readonly controllerDeviceId = "matter_controller";
 
   constructor(
     private config: MatterConfig,
@@ -74,6 +75,8 @@ export class MatterController {
         // Fallback for spike mode when runtime is disabled/unavailable.
         this.bootstrapOnOffSpikeDevice();
       }
+
+      await this.publishControllerState();
     } catch (error) {
       this.logger.error("Failed to start Matter controller", { error });
       throw error;
@@ -268,6 +271,11 @@ export class MatterController {
     deviceId: string,
     command: Record<string, unknown>
   ): Promise<void> {
+    if (deviceId === this.controllerDeviceId) {
+      await this.handleControllerCommand(command);
+      return;
+    }
+
     const device = this.deviceRegistry.getByHomecoreId(deviceId);
     if (!device) {
       this.logger.warn("Device not found", { deviceId });
@@ -294,6 +302,75 @@ export class MatterController {
       endpointId: device.endpointId,
       normalized,
     });
+  }
+
+  private async handleControllerCommand(command: Record<string, unknown>): Promise<void> {
+    const action = typeof command.action === "string" ? command.action : "";
+
+    switch (action) {
+      case "commission": {
+        const passcode =
+          typeof command.passcode === "number"
+            ? command.passcode
+            : this.config.passcode_default;
+        const discriminator =
+          typeof command.discriminator === "number"
+            ? command.discriminator
+            : this.config.discriminator_default;
+
+        const pairingCode = await this.commission(passcode, discriminator);
+        await this.wsBridge.publish("homecore/plugins/matter/command_result", {
+          action,
+          status: "ok",
+          pairing_code: pairingCode,
+          timestamp: new Date().toISOString(),
+        });
+        break;
+      }
+      case "reinterview": {
+        const nodeId = typeof command.node_id === "string" ? command.node_id : "";
+        if (!nodeId) {
+          throw new Error("reinterview requires node_id");
+        }
+        await this.reinterview(nodeId);
+        await this.wsBridge.publish("homecore/plugins/matter/command_result", {
+          action,
+          status: "ok",
+          node_id: nodeId,
+          timestamp: new Date().toISOString(),
+        });
+        break;
+      }
+      case "remove_node": {
+        const nodeId = typeof command.node_id === "string" ? command.node_id : "";
+        if (!nodeId) {
+          throw new Error("remove_node requires node_id");
+        }
+        await this.removeNode(nodeId);
+        await this.wsBridge.publish("homecore/plugins/matter/command_result", {
+          action,
+          status: "ok",
+          node_id: nodeId,
+          timestamp: new Date().toISOString(),
+        });
+        break;
+      }
+      case "nodes":
+      case "status": {
+        await this.wsBridge.publish("homecore/plugins/matter/command_result", {
+          action,
+          status: "ok",
+          info: this.getCommissioningInfo(),
+          timestamp: new Date().toISOString(),
+        });
+        break;
+      }
+      default: {
+        this.logger.warn("Unknown matter controller action", { action, command });
+      }
+    }
+
+    await this.publishControllerState();
   }
 
   private normalizeOnOffCommand(command: Record<string, unknown>): {
@@ -395,6 +472,23 @@ export class MatterController {
    */
   async simulateRuntimeOnOffChangedForTest(on: boolean): Promise<void> {
     await this.matterRuntime.emitOnOffChangedForTest(on);
+  }
+
+  private async publishControllerState(): Promise<void> {
+    const nodes = await this.getNodes();
+    const info = this.getCommissioningInfo();
+
+    await this.wsBridge.publish(`homecore/devices/${this.controllerDeviceId}/state`, {
+      commissioned_nodes: nodes.map((n) => ({
+        node_id: n.nodeId,
+        device_count: n.deviceCount,
+      })),
+      commissioning_active: info.active,
+      last_pairing_code: info.lastPairingCode,
+      runtime_enabled: info.runtimeEnabled,
+      runtime_device_id: info.runtimeDeviceId,
+      timestamp: new Date().toISOString(),
+    });
   }
 
   /**
