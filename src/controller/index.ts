@@ -20,6 +20,8 @@ export class MatterController {
   private statePublisher: StatePublisher;
   private matterRuntime: MatterRuntime;
   private commissioningActive = false;
+  private runtimeDeviceId: string = "matter_runtime_light_1";
+  private lastCommissioningCode: string | null = null;
 
   constructor(
     private config: MatterConfig,
@@ -35,8 +37,7 @@ export class MatterController {
     this.statePublisher = new StatePublisher(wsBridge, this.logger);
     this.matterRuntime = new MatterRuntime(this.logger);
     this.matterRuntime.setOnOffChangedHandler(async (on: boolean) => {
-      const runtimeDeviceId = "matter_runtime_light_1";
-      await this.statePublisher.publishState(runtimeDeviceId, { on }, { origin: "matter_runtime" });
+      await this.statePublisher.publishState(this.runtimeDeviceId, { on }, { origin: "matter_runtime" });
     });
   }
 
@@ -136,6 +137,8 @@ export class MatterController {
         pairingCode,
         discriminator: discriminator ?? "random",
       });
+
+      this.lastCommissioningCode = pairingCode;
 
       return pairingCode;
     } finally {
@@ -350,6 +353,8 @@ export class MatterController {
       return false;
     }
 
+    this.runtimeDeviceId = runtimeDevice.homecoreId;
+
     this.registerDevice(runtimeDevice.nodeId, {
       nodeId: runtimeDevice.nodeId,
       endpointId: runtimeDevice.endpointId,
@@ -366,6 +371,30 @@ export class MatterController {
       });
 
     return true;
+  }
+
+  /**
+   * Returns latest commissioning metadata for admin/API surfacing.
+   */
+  getCommissioningInfo(): {
+    active: boolean;
+    lastPairingCode: string | null;
+    runtimeEnabled: boolean;
+    runtimeDeviceId: string;
+  } {
+    return {
+      active: this.commissioningActive,
+      lastPairingCode: this.lastCommissioningCode,
+      runtimeEnabled: this.matterRuntime.isStarted(),
+      runtimeDeviceId: this.runtimeDeviceId,
+    };
+  }
+
+  /**
+   * Test helper to simulate runtime-originated OnOff updates without hardware.
+   */
+  async simulateRuntimeOnOffChangedForTest(on: boolean): Promise<void> {
+    await this.matterRuntime.emitOnOffChangedForTest(on);
   }
 
   /**

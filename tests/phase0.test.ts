@@ -301,4 +301,99 @@ level = "debug"
       });
     });
   });
+
+  it("should publish runtime-originated OnOff callback state", async () => {
+    const port = 19113;
+    const server = new WebSocketServer({ port });
+    const published: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridge = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (parsed.type === "publish") {
+          published.push(parsed);
+        }
+      });
+    });
+
+    await bridge.connect();
+
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store-runtime-callback"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const controller = new MatterController(config, bridge, logger);
+    await controller.start();
+
+    await controller.simulateRuntimeOnOffChangedForTest(true);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const runtimeStatePublish = published.find(
+      (msg) =>
+        msg.topic === "homecore/devices/matter_runtime_light_1/state" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).on === true &&
+        (msg.payload as Record<string, unknown>).origin === "matter_runtime"
+    );
+
+    expect(runtimeStatePublish).toBeDefined();
+
+    await controller.stop();
+    await bridge.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
+  it("should expose commissioning info for API surfacing", async () => {
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store-commission-info"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const wsBridge = new WebSocketBridge("ws://localhost:9999", {
+      maxReconnectAttempts: 0,
+    });
+
+    const controller = new MatterController(config, wsBridge, logger);
+
+    const before = controller.getCommissioningInfo();
+    expect(before.active).toBe(false);
+    expect(before.lastPairingCode).toBeNull();
+
+    const pairingCode = await controller.commission(12345678, 3840);
+    expect(pairingCode).toBe("12345678-3840");
+
+    const after = controller.getCommissioningInfo();
+    expect(after.active).toBe(false);
+    expect(after.lastPairingCode).toBe("12345678-3840");
+    expect(after.runtimeDeviceId).toBeDefined();
+  });
 });

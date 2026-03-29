@@ -17,6 +17,12 @@ export interface RuntimeBootstrapDevice {
   clusters: number[];
 }
 
+export interface RuntimeCommissioningSnapshot {
+  enabled: boolean;
+  started: boolean;
+  bootstrapDeviceId?: string;
+}
+
 type OnOffChangedHandler = (on: boolean) => Promise<void> | void;
 
 export class MatterRuntime {
@@ -38,6 +44,14 @@ export class MatterRuntime {
 
   getBootstrapDevice(): RuntimeBootstrapDevice | null {
     return this.bootstrapDevice;
+  }
+
+  getCommissioningSnapshot(): RuntimeCommissioningSnapshot {
+    return {
+      enabled: process.env.HC_MATTER_ENABLE_RUNTIME === "1",
+      started: this.started,
+      bootstrapDeviceId: this.bootstrapDevice?.homecoreId,
+    };
   }
 
   setOnOffChangedHandler(handler: OnOffChangedHandler): void {
@@ -179,6 +193,17 @@ export class MatterRuntime {
       this.started = false;
       this.logger.info("Matter runtime stopped");
     }
+  }
+
+  /**
+   * Test-only helper to exercise runtime -> controller -> state publisher path.
+   */
+  async emitOnOffChangedForTest(on: boolean): Promise<void> {
+    if (!this.onOnOffChanged) {
+      return;
+    }
+
+    await Promise.resolve(this.onOnOffChanged(on));
   }
 
   private installOnOffChangeListener(endpoint: unknown): void {
