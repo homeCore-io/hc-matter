@@ -33,6 +33,7 @@ export interface BridgeMetrics {
 }
 
 export class MatterBridge {
+  private readonly invalidEndpointSentinel = "__invalid_exposed_endpoint_id__";
   private logger: Logger;
   private controller: MatterController;
   private wsBridge: WebSocketBridge;
@@ -297,10 +298,15 @@ export class MatterBridge {
       action === "refresh_endpoints";
 
     const parsedEndpointIdTarget = this.parseExposedEndpointId(payload.exposed_endpoint_id);
+    const hasExposedEndpointField = Object.prototype.hasOwnProperty.call(
+      payload,
+      "exposed_endpoint_id"
+    );
     const hasDeviceTarget =
       (typeof payload.device_id === "string" && payload.device_id) ||
       (typeof payload.homecore_id === "string" && payload.homecore_id) ||
-      parsedEndpointIdTarget !== undefined;
+      parsedEndpointIdTarget !== undefined ||
+      hasExposedEndpointField;
 
     // Preserve shared command topic semantics: if this is not a known admin action
     // but explicitly targets a device/homecore id, let forwarding logic handle it.
@@ -504,6 +510,20 @@ export class MatterBridge {
       (typeof payload.correlation_id === "string" && payload.correlation_id) ||
       (typeof payload.correlationId === "string" && payload.correlationId) ||
       undefined;
+
+    if (deviceId === this.invalidEndpointSentinel) {
+      this.commandsRejected++;
+      await this.publishBridgeCommandResult(
+        "bridge_forward",
+        "error",
+        {
+          code: "INVALID_ENDPOINT_ID",
+          error: "Invalid exposed_endpoint_id",
+        },
+        correlationId
+      );
+      return;
+    }
 
     const endpoint = this.endpoints.get(deviceId);
     if (!endpoint) {
@@ -779,6 +799,10 @@ export class MatterBridge {
       }
 
       return `endpoint_${endpointId}`;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(payload, "exposed_endpoint_id")) {
+      return this.invalidEndpointSentinel;
     }
 
     return null;
