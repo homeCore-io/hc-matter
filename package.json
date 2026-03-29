@@ -1,0 +1,37 @@
+{
+  "name": "hc-matter",
+  "version": "1.0.0",
+  "description": "HomeCore Matter Plugin (matter.js based controller and bridge)",
+  "main": "dist/main.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "start": "node dist/main.js",
+    "dev": "node --watch dist/main.js",
+    "test": "vitest",
+    "test:watch": "vitest --watch",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "clean": "rm -rf dist/ *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@iarna/toml": "^2.2.5",
+    "@matter/main": "^0.16.10",
+    "@matter/nodejs": "^0.16.10",
+    "ws": "^8.16.0",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/ws": "^8.18.1",
+    "@typescript-eslint/eslint-plugin": "^6.18.0",
+    "@typescript-eslint/parser": "^6.18.0",
+    "eslint": "^8.56.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.1.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

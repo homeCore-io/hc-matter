@@ -1,0 +1,67 @@
+# HomeCore Matter Plugin Configuration
+
+[homecore]
+# WebSocket connection to HomeCore MQTT bridge
+# Can be overridden with WS_URL environment variable
+ws_url = "ws://localhost:9001"
+reconnect_delay_secs = 5
+# 0 = infinite reconnection attempts; useful for network blips
+max_reconnect_attempts = 0
+
+[matter]
+# Storage directory for fabric store, nodes, and backups
+storage_dir = "data/matter"
+
+# Security provider for fabric store encryption
+# Options: "plaintext" (development) or "env" (production)
+# Plaintext stores credentials unencrypted (for dev/testing only)
+# Env reads encryption key from HC_MATTER_STORE_KEY environment variable
+security_provider = "plaintext"
+# security_provider = "env"
+# security_key_env_var = "HC_MATTER_STORE_KEY"
+
+# mDNS advertising configuration
+instance_name = "HomeCore"
+
+# Default commissioning passcode (28-bit number 1–134217727)
+# Can be overridden at commissioning time via API
+passcode_default = 12345678
+
+# Default discriminator (12-bit number 0–4095)
+# If not set in commissioning, a random value will be used
+discriminator_default = 3840
+
+[controller]
+# Enable Matter controller (commission and control Matter devices)
+enabled = true
+
+# Optional: restrict commissioning to local network
+# Values: "local-only" | "any"
+commissioning_required_for = "local-only"
+
+[bridge]
+# Enable Matter bridge (expose HomeCore devices as Matter endpoints)
+enabled = true
+
+# Device inclusion patterns (glob or device IDs)
+# Use "*" to include all, or specific patterns like "light.*", "sensor.*"
+include_ids = ["light.*", "switch.*", "sensor.*"]
+
+# Device exclusion patterns (takes precedence over include_ids)
+exclude_ids = []
+
+# Optional: filter by HomeCore device type
+# Only devices matching these types will be bridged
+# device_type_filter = ["light", "switch", "sensor"]
+
+# Optional: filter by HomeCore area ID
+# Only devices in these areas will be bridged
+# area_filter = ["living_room", "bedroom", "kitchen"]
+
+[logging]
+# Log level: trace, debug, info, warn, error
+level = "debug"
+
+# Enable file appender (daily rolling logs)
+file_appender = true
+file_path = "logs/hc-matter.log"
