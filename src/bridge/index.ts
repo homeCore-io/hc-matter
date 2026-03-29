@@ -684,7 +684,8 @@ export class MatterBridge {
 
         return null;
       }
-      case "cover": {
+      case "cover":
+      case "shade": {
         if (action === "open" || action === "close") {
           return withCorrelation({ command: action });
         }

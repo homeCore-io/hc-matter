@@ -2871,6 +2871,89 @@ level = "debug"
     });
   });
 
+  it("should apply shade commands and publish updated position", async () => {
+    const port = 19382;
+    const server = new WebSocketServer({ port });
+    const published: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridge = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (parsed.type === "publish") {
+          published.push(parsed);
+        }
+      });
+    });
+
+    await bridge.connect();
+
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store-shade"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const controller = new MatterController(config, bridge, logger);
+    await controller.start();
+
+    controller.registerDevice("shade-node-1", {
+      nodeId: "shade-node-1",
+      endpointId: 1,
+      matterType: "WindowCovering",
+      homecoreId: "bedroom_shade",
+      homecoreType: "shade",
+      clusters: [258],
+    });
+
+    for (const client of server.clients) {
+      client.send(
+        JSON.stringify({
+          type: "mqtt_message",
+          topic: "homecore/devices/bedroom_shade/cmd",
+          payload: { command: "open", correlation_id: "test-corr-shade" },
+        })
+      );
+    }
+
+    const statePublish = await waitForPublishedMessage(
+      published,
+      (msg) =>
+        msg.topic === "homecore/devices/bedroom_shade/state" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).position === 100 &&
+        (msg.payload as Record<string, unknown>).correlation_id === "test-corr-shade",
+      500
+    );
+
+    expect(statePublish).toBeDefined();
+
+    await controller.stop();
+    await bridge.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
   it("should publish runtime-originated OnOff callback state", async () => {
     const port = 19113;
     const server = new WebSocketServer({ port });
@@ -2925,6 +3008,107 @@ level = "debug"
 
     await controller.stop();
     await bridge.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
+  it("should forward shade bridge commands to HomeCore device cmd topics", async () => {
+    const port = 19383;
+    const server = new WebSocketServer({ port });
+    const published: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridgeWs = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (parsed.type === "publish") {
+          published.push(parsed);
+        }
+      });
+    });
+
+    await bridgeWs.connect();
+
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store-bridge-shade-cmd"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const controller = new MatterController(config, bridgeWs, logger);
+    await controller.start();
+    controller.registerDevice("shade-node-2", {
+      nodeId: "shade-node-2",
+      endpointId: 4,
+      matterType: "WindowCovering",
+      homecoreId: "shade.virtual_1",
+      homecoreType: "shade",
+      clusters: [258],
+    });
+
+    const matterBridge = new MatterBridge(
+      {
+        enabled: true,
+        include_ids: ["shade.*"],
+        exclude_ids: [],
+      },
+      controller,
+      bridgeWs,
+      logger
+    );
+    await matterBridge.start();
+
+    for (const client of server.clients) {
+      client.send(
+        JSON.stringify({
+          type: "mqtt_message",
+          topic: "homecore/plugins/matter/bridge/cmd",
+          payload: {
+            action: "set_position",
+            homecore_id: "shade.virtual_1",
+            value: 22,
+            correlation_id: "bridge-shade-1",
+          },
+        })
+      );
+    }
+
+    const forwarded = await waitForPublishedMessage(
+      published,
+      (msg) =>
+        msg.topic === "homecore/devices/shade.virtual_1/cmd" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).position === 22 &&
+        (msg.payload as Record<string, unknown>).origin === "matter_bridge" &&
+        (msg.payload as Record<string, unknown>).correlation_id === "bridge-shade-1",
+      700
+    );
+
+    expect(forwarded).toBeDefined();
+
+    await matterBridge.stop();
+    await controller.stop();
+    await bridgeWs.disconnect();
     await new Promise<void>((resolve, reject) => {
       server.close((err) => {
         if (err) {

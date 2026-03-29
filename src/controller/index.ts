@@ -558,7 +558,7 @@ export class MatterController {
           );
           applied = true;
         }
-      } else if (device.homecoreType === "cover") {
+      } else if (device.homecoreType === "cover" || device.homecoreType === "shade") {
         const parsed = this.normalizeCoverCommand(command);
         normalized = parsed;
 
@@ -1014,6 +1014,7 @@ export class MatterController {
       case "lock":
         return { locked: true };
       case "cover":
+      case "shade":
         return { position: 0 };
       default:
         return { on: false, brightness_pct: 0 };
