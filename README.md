@@ -52,6 +52,16 @@ npm run build
 npm start
 ```
 
+### Optional: Enable real matter.js runtime
+By default, hc-matter runs in safe spike mode (no live matter.js node runtime).
+
+To enable the in-process matter.js ServerNode bootstrap used for Phase 1 integration testing:
+
+```bash
+export HC_MATTER_ENABLE_RUNTIME=1
+npm start
+```
+
 ### Configuration
 Edit `config/homecore-matter.toml` to set:
 - `homecore.ws_url` — WebSocket address of HomeCore MQTT bridge (default: `ws://localhost:9001`)

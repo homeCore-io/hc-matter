@@ -11,12 +11,14 @@ import { WebSocketBridge } from "../ws-bridge.js";
 import { FabricStore } from "./fabric-store.js";
 import { DeviceRegistry, MatterDevice } from "../device-registry.js";
 import { StatePublisher } from "../state-publisher.js";
+import { MatterRuntime } from "../matter-runtime.js";
 
 export class MatterController {
   private logger: Logger;
   private fabricStore: FabricStore;
   private deviceRegistry: DeviceRegistry;
   private statePublisher: StatePublisher;
+  private matterRuntime: MatterRuntime;
   private commissioningActive = false;
 
   constructor(
@@ -31,6 +33,7 @@ export class MatterController {
     );
     this.deviceRegistry = new DeviceRegistry(this.logger);
     this.statePublisher = new StatePublisher(wsBridge, this.logger);
+    this.matterRuntime = new MatterRuntime(this.logger);
   }
 
   /**
@@ -53,8 +56,12 @@ export class MatterController {
       // Register plugin with HomeCore
       await this.wsBridge.register("matter", ["controller", "bridge"], "1.0.0");
 
+      // Best-effort real matter.js bootstrap (feature-flagged).
+      await this.matterRuntime.start();
+
       this.logger.info("Matter controller started", {
         nodes: this.fabricStore.listNodes().length,
+        matter_runtime: this.matterRuntime.isStarted(),
       });
 
       // Phase 0 spike bootstrap: publish one synthetic OnOff light for command loop validation.
@@ -70,6 +77,8 @@ export class MatterController {
    */
   async stop(): Promise<void> {
     this.logger.info("Stopping Matter controller");
+
+    await this.matterRuntime.stop();
 
     // Save fabric store if dirty
     if (this.fabricStore.isDirty()) {
@@ -260,6 +269,8 @@ export class MatterController {
     // Phase 0 spike: support basic OnOff command semantics.
     const normalized = this.normalizeOnOffCommand(command);
     if (normalized.on !== undefined) {
+      await this.matterRuntime.setOnOff(normalized.on);
+
       await this.statePublisher.publishState(
         deviceId,
         { on: normalized.on },
