@@ -89,6 +89,8 @@ async function main(): Promise<void> {
       bridged_endpoints: 0,
       bridged_endpoints_with_state: 0,
       bridge_reconnect_restores: 0,
+      bridge_commands_forwarded: 0,
+      bridge_commands_rejected: 0,
     };
 
     await wsBridge.publish("homecore/plugins/matter/metrics", {

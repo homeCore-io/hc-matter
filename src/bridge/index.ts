@@ -27,6 +27,8 @@ export interface BridgeMetrics {
   bridged_endpoints: number;
   bridged_endpoints_with_state: number;
   bridge_reconnect_restores: number;
+  bridge_commands_forwarded: number;
+  bridge_commands_rejected: number;
 }
 
 export class MatterBridge {
@@ -37,6 +39,8 @@ export class MatterBridge {
   private handlersAttached = false;
   private endpoints: Map<string, BridgeEndpoint> = new Map();
   private reconnectRestores = 0;
+  private commandsForwarded = 0;
+  private commandsRejected = 0;
 
   private readonly onBridgeMessage = (msg: unknown) => this.handleMessage(msg);
   private readonly onBridgeConnected = () => {
@@ -133,6 +137,8 @@ export class MatterBridge {
       bridged_endpoints: this.endpoints.size,
       bridged_endpoints_with_state: endpointsWithState,
       bridge_reconnect_restores: this.reconnectRestores,
+      bridge_commands_forwarded: this.commandsForwarded,
+      bridge_commands_rejected: this.commandsRejected,
     };
   }
 
@@ -140,6 +146,8 @@ export class MatterBridge {
     this.reconnectRestores++;
     await this.wsBridge.subscribe("homecore/devices/+/state");
     await this.wsBridge.subscribe("homecore/plugins/matter/device_registered");
+    await this.wsBridge.subscribe("homecore/plugins/matter/bridge/cmd");
+    await this.wsBridge.subscribe("homecore/plugins/matter/bridge/+/cmd");
   }
 
   private async refreshEndpointsFromController(): Promise<void> {
@@ -230,6 +238,19 @@ export class MatterBridge {
       return;
     }
 
+    const bridgeCommandDeviceId = this.extractDeviceIdFromBridgeCmdTopic(topic, payload);
+    if (bridgeCommandDeviceId) {
+      this.forwardBridgeCommand(bridgeCommandDeviceId, payload).catch((error) => {
+        this.commandsRejected++;
+        this.logger.warn("Failed to forward bridge command", {
+          error: error instanceof Error ? error.message : String(error),
+          topic,
+          deviceId: bridgeCommandDeviceId,
+        });
+      });
+      return;
+    }
+
     const deviceId = this.extractDeviceIdFromStateTopic(topic);
     if (!deviceId) {
       return;
@@ -242,6 +263,110 @@ export class MatterBridge {
 
     endpoint.lastState = { ...payload };
     endpoint.lastUpdatedAt = new Date().toISOString();
+  }
+
+  private async forwardBridgeCommand(
+    deviceId: string,
+    payload: Record<string, unknown>
+  ): Promise<void> {
+    const endpoint = this.endpoints.get(deviceId);
+    if (!endpoint) {
+      this.commandsRejected++;
+      this.logger.warn("Bridge command ignored for unknown endpoint", { deviceId });
+      return;
+    }
+
+    const command = this.translateBridgeCommand(endpoint, payload);
+    if (!command) {
+      this.commandsRejected++;
+      this.logger.warn("Bridge command ignored due to unsupported payload", {
+        deviceId,
+        payload,
+      });
+      return;
+    }
+
+    await this.wsBridge.publish(`homecore/devices/${deviceId}/cmd`, {
+      ...command,
+      origin: "matter_bridge",
+      timestamp: new Date().toISOString(),
+    });
+
+    this.commandsForwarded++;
+  }
+
+  private translateBridgeCommand(
+    endpoint: BridgeEndpoint,
+    payload: Record<string, unknown>
+  ): Record<string, unknown> | null {
+    const explicitCommand = payload.command;
+    if (explicitCommand && typeof explicitCommand === "object") {
+      return explicitCommand as Record<string, unknown>;
+    }
+
+    const action = typeof payload.action === "string" ? payload.action : null;
+    const value = payload.value;
+    const correlationId =
+      (typeof payload.correlation_id === "string" && payload.correlation_id) ||
+      (typeof payload.correlationId === "string" && payload.correlationId) ||
+      undefined;
+
+    const withCorrelation = (base: Record<string, unknown>) => {
+      if (!correlationId) {
+        return base;
+      }
+      return {
+        ...base,
+        correlation_id: correlationId,
+      };
+    };
+
+    switch (endpoint.homecoreType) {
+      case "light":
+      case "dimmer_light": {
+        if (action === "on" || action === "off") {
+          return withCorrelation({ command: action });
+        }
+
+        if (action === "set_on" && typeof value === "boolean") {
+          return withCorrelation({ on: value });
+        }
+
+        if (action === "set_brightness" && typeof value === "number") {
+          return withCorrelation({
+            brightness_pct: Math.max(0, Math.min(100, Math.round(value))),
+          });
+        }
+
+        return null;
+      }
+      case "lock": {
+        if (action === "lock" || action === "unlock") {
+          return withCorrelation({ command: action });
+        }
+
+        if (action === "set_locked" && typeof value === "boolean") {
+          return withCorrelation({ locked: value });
+        }
+
+        return null;
+      }
+      case "cover": {
+        if (action === "open" || action === "close") {
+          return withCorrelation({ command: action });
+        }
+
+        if (action === "set_position" && typeof value === "number") {
+          return withCorrelation({
+            position: Math.max(0, Math.min(100, Math.round(value))),
+          });
+        }
+
+        return null;
+      }
+      default:
+        return null;
+    }
   }
 
   private handleDeviceRegistered(payload: Record<string, unknown>): void {
@@ -286,5 +411,29 @@ export class MatterBridge {
       return null;
     }
     return match[1];
+  }
+
+  private extractDeviceIdFromBridgeCmdTopic(
+    topic: string,
+    payload: Record<string, unknown>
+  ): string | null {
+    const direct = topic.match(/^homecore\/plugins\/matter\/bridge\/([^/]+)\/cmd$/);
+    if (direct) {
+      return direct[1];
+    }
+
+    if (topic !== "homecore/plugins/matter/bridge/cmd") {
+      return null;
+    }
+
+    if (typeof payload.device_id === "string" && payload.device_id) {
+      return payload.device_id;
+    }
+
+    if (typeof payload.homecore_id === "string" && payload.homecore_id) {
+      return payload.homecore_id;
+    }
+
+    return null;
   }
 }
