@@ -196,6 +196,44 @@ export class MatterRuntime {
   }
 
   /**
+   * Best-effort runtime-side reinterview hook.
+   * Returns true when runtime accepted the request for a known runtime node.
+   */
+  async reinterviewNode(nodeId: string): Promise<boolean> {
+    if (!this.started || !this.bootstrapDevice) {
+      return false;
+    }
+
+    if (nodeId !== this.bootstrapDevice.nodeId) {
+      return false;
+    }
+
+    // Phase 1 placeholder for concrete matter.js endpoint/cluster refresh operations.
+    this.logger.info("Matter runtime reinterview request accepted", { nodeId });
+    return true;
+  }
+
+  /**
+   * Best-effort runtime-side remove hook.
+   * Returns true when runtime accepted the request for a known runtime node.
+   */
+  async removeNode(nodeId: string): Promise<boolean> {
+    if (!this.started || !this.bootstrapDevice) {
+      return false;
+    }
+
+    if (nodeId !== this.bootstrapDevice.nodeId) {
+      return false;
+    }
+
+    // Phase 1 placeholder for concrete matter.js fabric removal operations.
+    this.lightEndpoint = null;
+    this.bootstrapDevice = null;
+    this.logger.info("Matter runtime remove node request accepted", { nodeId });
+    return true;
+  }
+
+  /**
    * Test-only helper to exercise runtime -> controller -> state publisher path.
    */
   async emitOnOffChangedForTest(on: boolean): Promise<void> {

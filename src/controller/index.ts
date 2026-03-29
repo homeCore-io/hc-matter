@@ -193,7 +193,7 @@ export class MatterController {
   /**
    * Reinterview a node (refresh endpoints and clusters)
    */
-  async reinterview(nodeId: string): Promise<void> {
+  async reinterview(nodeId: string): Promise<boolean> {
     const node = this.fabricStore.getNode(nodeId);
     if (!node) {
       throw new ControllerCommandError("NODE_NOT_FOUND", `Node not found: ${nodeId}`);
@@ -204,20 +204,24 @@ export class MatterController {
     // TODO: Query node endpoints and clusters from matter.js
     // TODO: Update device registry with new/removed endpoints
     this.fabricStore.updateNodeEndpoints(nodeId, node.endpoints);
+    const runtimeApplied = await this.matterRuntime.reinterviewNode(nodeId);
 
     this.logger.info("Reinterview completed", { nodeId });
+    return runtimeApplied;
   }
 
   /**
    * Remove a commissioned node
    */
-  async removeNode(nodeId: string): Promise<void> {
+  async removeNode(nodeId: string): Promise<boolean> {
     const node = this.fabricStore.getNode(nodeId);
     if (!node) {
       throw new ControllerCommandError("NODE_NOT_FOUND", `Node not found: ${nodeId}`);
     }
 
     this.logger.info("Removing node", { nodeId });
+
+    const runtimeApplied = await this.matterRuntime.removeNode(nodeId);
 
     // Remove from fabric store
     this.fabricStore.removeNode(nodeId);
@@ -231,6 +235,7 @@ export class MatterController {
     // TODO: Notify matter.js to remove from fabric
 
     this.logger.info("Node removed", { nodeId });
+    return runtimeApplied;
   }
 
   /**
@@ -387,22 +392,28 @@ export class MatterController {
       }
       case "reinterview": {
         const parsed = ReinterviewPayloadSchema.parse(command);
-        await this.reinterview(parsed.node_id);
+        const runtimeApplied = await this.reinterview(parsed.node_id);
         await this.publishCommandResult(
           action,
           "ok",
-          { node_id: parsed.node_id },
+          {
+            node_id: parsed.node_id,
+            runtime_applied: runtimeApplied,
+          },
           correlationId
         );
         break;
       }
       case "remove_node": {
         const parsed = RemoveNodePayloadSchema.parse(command);
-        await this.removeNode(parsed.node_id);
+        const runtimeApplied = await this.removeNode(parsed.node_id);
         await this.publishCommandResult(
           action,
           "ok",
-          { node_id: parsed.node_id },
+          {
+            node_id: parsed.node_id,
+            runtime_applied: runtimeApplied,
+          },
           correlationId
         );
         break;

@@ -645,6 +645,8 @@ level = "debug"
     );
 
     expect(result).toBeDefined();
+    const payload = (result as Record<string, unknown>).payload as Record<string, unknown>;
+    expect(payload.runtime_applied).toBe(false);
 
     await controller.stop();
     await bridge.disconnect();
@@ -730,6 +732,8 @@ level = "debug"
     );
 
     expect(result).toBeDefined();
+    const payload = (result as Record<string, unknown>).payload as Record<string, unknown>;
+    expect(payload.runtime_applied).toBe(false);
 
     const verifyStore = new FabricStore(path.join(storageDir, "fabric_store.json"), logger);
     await verifyStore.load();
