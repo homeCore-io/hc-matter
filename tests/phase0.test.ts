@@ -2420,6 +2420,87 @@ level = "debug"
     });
   });
 
+  it("should return controller metrics payload for matter_controller metrics action", async () => {
+    const port = 19271;
+    const server = new WebSocketServer({ port });
+    const published: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridge = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (parsed.type === "publish") {
+          published.push(parsed);
+        }
+      });
+    });
+
+    await bridge.connect();
+
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store-controller-metrics"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const controller = new MatterController(config, bridge, logger);
+    await controller.start();
+
+    bridge.emit("message", {
+      type: "mqtt_message",
+      topic: "homecore/devices/matter_controller/cmd",
+      payload: { action: "metrics", correlation_id: "metrics-1" },
+    });
+
+    const metricsResult = await waitForPublishedMessage(
+      published,
+      (msg) =>
+        msg.topic === "homecore/plugins/matter/command_result" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).action === "metrics",
+      600
+    );
+
+    expect(metricsResult).toBeDefined();
+
+    const payload = (metricsResult as Record<string, unknown>).payload as Record<string, unknown>;
+    expect(payload.status).toBe("ok");
+    expect(payload.correlation_id).toBe("metrics-1");
+    expect(typeof payload.metrics).toBe("object");
+    expect(payload.metrics).not.toBeNull();
+    expect(
+      Object.prototype.hasOwnProperty.call(
+        payload.metrics as Record<string, unknown>,
+        "device_commands_processed"
+      )
+    ).toBe(true);
+
+    await controller.stop();
+    await bridge.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
   it("should handle reinterview action when node exists", async () => {
     const port = 19120;
     const server = new WebSocketServer({ port });

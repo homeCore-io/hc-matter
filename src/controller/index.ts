@@ -20,6 +20,7 @@ const ControllerActionSchema = z.enum([
   "remove_node",
   "status",
   "nodes",
+  "metrics",
 ]);
 
 const CommissionPayloadSchema = z.object({
@@ -650,6 +651,18 @@ export class MatterController {
               node_id: node.nodeId,
               device_count: node.deviceCount,
             })),
+          },
+          correlationId
+        );
+        break;
+      }
+      case "metrics": {
+        const metrics = await this.getMetrics();
+        await this.publishCommandResult(
+          action,
+          "ok",
+          {
+            metrics,
           },
           correlationId
         );
