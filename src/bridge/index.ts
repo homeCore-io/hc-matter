@@ -239,6 +239,10 @@ export class MatterBridge {
   }
 
   private handleMqttMessage(topic: string, payload: Record<string, unknown>): void {
+    if (this.handleBridgeAdminCommand(topic, payload)) {
+      return;
+    }
+
     if (topic === "homecore/plugins/matter/device_registered") {
       this.handleDeviceRegistered(payload);
       return;
@@ -275,6 +279,96 @@ export class MatterBridge {
         error: error instanceof Error ? error.message : String(error),
       });
     });
+  }
+
+  private handleBridgeAdminCommand(
+    topic: string,
+    payload: Record<string, unknown>
+  ): boolean {
+    if (topic !== "homecore/plugins/matter/bridge/cmd") {
+      return false;
+    }
+
+    const action = typeof payload.action === "string" ? payload.action : null;
+    const correlationId =
+      (typeof payload.correlation_id === "string" && payload.correlation_id) ||
+      (typeof payload.correlationId === "string" && payload.correlationId) ||
+      undefined;
+
+    if (action === "list_endpoints") {
+      const limitRaw = typeof payload.limit === "number" ? payload.limit : 50;
+      const offsetRaw = typeof payload.offset === "number" ? payload.offset : 0;
+      const limit = Math.max(1, Math.min(200, Math.floor(limitRaw)));
+      const offset = Math.max(0, Math.floor(offsetRaw));
+      const filterType =
+        typeof payload.homecore_type === "string" ? payload.homecore_type : undefined;
+      const search =
+        typeof payload.search === "string" ? payload.search.trim().toLowerCase() : undefined;
+
+      const all = Array.from(this.endpoints.values())
+        .sort((a, b) => a.exposedEndpointId - b.exposedEndpointId)
+        .filter((endpoint) => {
+          if (filterType && endpoint.homecoreType !== filterType) {
+            return false;
+          }
+
+          if (!search) {
+            return true;
+          }
+
+          return (
+            endpoint.homecoreId.toLowerCase().includes(search) ||
+            endpoint.matterType.toLowerCase().includes(search)
+          );
+        });
+
+      const page = all.slice(offset, offset + limit);
+
+      this.publishBridgeCommandResult(
+        action,
+        "ok",
+        {
+          total: all.length,
+          returned: page.length,
+          limit,
+          offset,
+          endpoints: page.map((endpoint) => ({
+            exposed_endpoint_id: endpoint.exposedEndpointId,
+            homecore_id: endpoint.homecoreId,
+            homecore_type: endpoint.homecoreType,
+            matter_type: endpoint.matterType,
+            node_id: endpoint.nodeId,
+            endpoint_id: endpoint.endpointId,
+            clusters: endpoint.clusters,
+            last_state: endpoint.lastState,
+            last_updated_at: endpoint.lastUpdatedAt,
+          })),
+        },
+        correlationId
+      ).catch((error) => {
+        this.logger.warn("Failed to publish list_endpoints bridge command result", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+
+      return true;
+    }
+
+    this.publishBridgeCommandResult(
+      action ?? "unknown",
+      "error",
+      {
+        code: "INVALID_BRIDGE_ACTION",
+        error: "Unsupported bridge admin action",
+      },
+      correlationId
+    ).catch((error) => {
+      this.logger.warn("Failed to publish invalid bridge action result", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+
+    return true;
   }
 
   private async forwardBridgeCommand(
