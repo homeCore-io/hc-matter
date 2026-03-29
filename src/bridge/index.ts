@@ -296,10 +296,11 @@ export class MatterBridge {
       action === "get_bridge_metrics" ||
       action === "refresh_endpoints";
 
+    const parsedEndpointIdTarget = this.parseExposedEndpointId(payload.exposed_endpoint_id);
     const hasDeviceTarget =
       (typeof payload.device_id === "string" && payload.device_id) ||
       (typeof payload.homecore_id === "string" && payload.homecore_id) ||
-      typeof payload.exposed_endpoint_id === "number";
+      parsedEndpointIdTarget !== undefined;
 
     // Preserve shared command topic semantics: if this is not a known admin action
     // but explicitly targets a device/homecore id, let forwarding logic handle it.
@@ -372,9 +373,10 @@ export class MatterBridge {
     }
 
     if (action === "get_endpoint") {
+      const parsedEndpointId = this.parseExposedEndpointId(payload.exposed_endpoint_id);
       const byEndpointId =
-        typeof payload.exposed_endpoint_id === "number"
-          ? this.findByExposedEndpointId(Math.floor(payload.exposed_endpoint_id))
+        parsedEndpointId !== undefined
+          ? this.findByExposedEndpointId(parsedEndpointId)
           : undefined;
       const byHomecoreId =
         typeof payload.homecore_id === "string"
@@ -768,8 +770,9 @@ export class MatterBridge {
       return payload.homecore_id;
     }
 
-    if (typeof payload.exposed_endpoint_id === "number") {
-      const endpointId = Math.floor(payload.exposed_endpoint_id);
+    const parsedEndpointId = this.parseExposedEndpointId(payload.exposed_endpoint_id);
+    if (parsedEndpointId !== undefined) {
+      const endpointId = parsedEndpointId;
       const endpoint = this.findByExposedEndpointId(endpointId);
       if (endpoint) {
         return endpoint.homecoreId;
@@ -787,6 +790,35 @@ export class MatterBridge {
         return endpoint;
       }
     }
+    return undefined;
+  }
+
+  private parseExposedEndpointId(value: unknown): number | undefined {
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) {
+        return undefined;
+      }
+      const endpointId = Math.floor(value);
+      if (endpointId < 1) {
+        return undefined;
+      }
+      return endpointId;
+    }
+
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (!/^\d+$/.test(trimmed)) {
+        return undefined;
+      }
+
+      const endpointId = Number(trimmed);
+      if (!Number.isFinite(endpointId) || endpointId < 1) {
+        return undefined;
+      }
+
+      return Math.floor(endpointId);
+    }
+
     return undefined;
   }
 
