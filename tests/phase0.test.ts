@@ -2207,6 +2207,66 @@ level = "debug"
     }
   });
 
+  it("should resync node endpoints from runtime snapshot on reinterview", async () => {
+    const previousSimulate = process.env.HC_MATTER_SIMULATE_RUNTIME;
+    process.env.HC_MATTER_SIMULATE_RUNTIME = "1";
+
+    try {
+      const logger = new Logger("test");
+      const storageDir = path.join(testDir, "matter-store-runtime-reinterview-resync");
+      const config = {
+        storage_dir: storageDir,
+        security_provider: "plaintext" as const,
+        security_key_env_var: "HC_MATTER_STORE_KEY",
+        instance_name: "TestCore",
+        passcode_default: 12345678,
+        discriminator_default: 3840,
+      };
+
+      const bridge = new WebSocketBridge("ws://localhost:9999", {
+        maxReconnectAttempts: 0,
+      });
+
+      const controller = new MatterController(config, bridge, logger);
+      await controller.start();
+
+      const before = await controller.getNodeDetail("runtime-node-1");
+      expect(before.endpoint_count).toBe(3);
+
+      const store = new FabricStore(path.join(storageDir, "fabric_store.json"), logger);
+      await store.load();
+      store.updateNodeEndpoints("runtime-node-1", {
+        1: {
+          id: 1,
+          clusters: {
+            6: { id: 6, attributes: {} },
+          },
+        },
+      });
+      await store.save();
+
+      const runtimeApplied = await controller.reinterview("runtime-node-1");
+      expect(runtimeApplied).toBe(true);
+
+      const after = await controller.getNodeDetail("runtime-node-1");
+      expect(after.endpoint_count).toBe(3);
+      expect(after.endpoints.map((endpoint) => endpoint.endpoint_id)).toEqual([1, 2, 3]);
+
+      const devices = await controller.getDevices();
+      expect(
+        devices.filter((device) => device.nodeId === "runtime-node-1").map((d) => d.endpointId)
+      ).toEqual([1, 2, 3]);
+
+      await controller.stop();
+    } finally {
+      if (previousSimulate === undefined) {
+        delete process.env.HC_MATTER_SIMULATE_RUNTIME;
+      } else {
+        process.env.HC_MATTER_SIMULATE_RUNTIME = previousSimulate;
+      }
+    }
+  });
+
   it("should set runtime_applied=true for runtime-sim lock commands", async () => {
     const previousSimulate = process.env.HC_MATTER_SIMULATE_RUNTIME;
     process.env.HC_MATTER_SIMULATE_RUNTIME = "1";

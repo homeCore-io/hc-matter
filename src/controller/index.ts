@@ -393,8 +393,6 @@ export class MatterController {
     // Save fabric store
     await this.fabricStore.save();
 
-    // TODO: Notify matter.js to remove from fabric
-
     this.logger.info("Node removed", { nodeId });
     return runtimeApplied;
   }
