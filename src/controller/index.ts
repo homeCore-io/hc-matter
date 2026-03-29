@@ -574,6 +574,20 @@ export class MatterController {
           );
           applied = true;
         }
+      } else if (device.homecoreType === "switch") {
+        const parsed = this.normalizeLightCommand(command);
+        normalized = parsed;
+
+        if (parsed.on !== undefined) {
+          await this.matterRuntime.setOnOff(parsed.on);
+          await this.statePublisher.publishState(
+            deviceId,
+            { on: parsed.on },
+            { origin: "matter_controller", correlationId: parsed.correlationId }
+          );
+          applied = true;
+          runtimeApplied = this.matterRuntime.isStarted();
+        }
       } else {
         const parsed = this.normalizeLightCommand(command);
         normalized = parsed;

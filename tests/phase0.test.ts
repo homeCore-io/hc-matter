@@ -1121,6 +1121,121 @@ level = "debug"
     });
   });
 
+  it("should forward switch bridge commands to HomeCore device cmd topics", async () => {
+    const port = 19371;
+    const server = new WebSocketServer({ port });
+    const published: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridgeWs = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (parsed.type === "publish") {
+          published.push(parsed);
+        }
+      });
+    });
+
+    await bridgeWs.connect();
+
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store-bridge-switch-cmd"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const controller = new MatterController(config, bridgeWs, logger);
+    await controller.start();
+    controller.registerDevice("switch-node-1", {
+      nodeId: "switch-node-1",
+      endpointId: 7,
+      matterType: "OnOffSwitch",
+      homecoreId: "switch.virtual_1",
+      homecoreType: "switch",
+      clusters: [6],
+    });
+
+    const matterBridge = new MatterBridge(
+      {
+        enabled: true,
+        include_ids: ["switch.*"],
+        exclude_ids: [],
+      },
+      controller,
+      bridgeWs,
+      logger
+    );
+    await matterBridge.start();
+
+    for (const client of server.clients) {
+      client.send(
+        JSON.stringify({
+          type: "mqtt_message",
+          topic: "homecore/plugins/matter/bridge/cmd",
+          payload: {
+            action: "set_on",
+            homecore_id: "switch.virtual_1",
+            value: true,
+            correlation_id: "bridge-switch-1",
+          },
+        })
+      );
+    }
+
+    const forwarded = await waitForPublishedMessage(
+      published,
+      (msg) =>
+        msg.topic === "homecore/devices/switch.virtual_1/cmd" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).on === true &&
+        (msg.payload as Record<string, unknown>).origin === "matter_bridge" &&
+        (msg.payload as Record<string, unknown>).correlation_id === "bridge-switch-1",
+      700
+    );
+
+    expect(forwarded).toBeDefined();
+
+    const result = await waitForPublishedMessage(
+      published,
+      (msg) =>
+        msg.topic === "homecore/plugins/matter/command_result" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).action === "bridge_forward" &&
+        (msg.payload as Record<string, unknown>).status === "ok" &&
+        (msg.payload as Record<string, unknown>).correlation_id === "bridge-switch-1",
+      700
+    );
+
+    expect(result).toBeDefined();
+
+    await matterBridge.stop();
+    await controller.stop();
+    await bridgeWs.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
   it("should publish bridge command_result errors for unknown endpoint ids", async () => {
     const port = 19250;
     const server = new WebSocketServer({ port });
@@ -1548,6 +1663,96 @@ level = "debug"
     );
 
     expect(errorResult).toBeDefined();
+
+    await controller.stop();
+    await bridge.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
+  it("should reject brightness commands for switch devices", async () => {
+    const port = 19372;
+    const server = new WebSocketServer({ port });
+    const published: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridge = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (parsed.type === "publish") {
+          published.push(parsed);
+        }
+      });
+    });
+
+    await bridge.connect();
+
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store-switch-brightness-reject"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const controller = new MatterController(config, bridge, logger);
+    await controller.start();
+    controller.registerDevice("switch-node-2", {
+      nodeId: "switch-node-2",
+      endpointId: 4,
+      matterType: "OnOffSwitch",
+      homecoreId: "switch.virtual_2",
+      homecoreType: "switch",
+      clusters: [6],
+    });
+
+    for (const client of server.clients) {
+      client.send(
+        JSON.stringify({
+          type: "mqtt_message",
+          topic: "homecore/devices/switch.virtual_2/cmd",
+          payload: { brightness_pct: 33, correlation_id: "switch-brightness-1" },
+        })
+      );
+    }
+
+    const errorResult = await waitForPublishedMessage(
+      published,
+      (msg) =>
+        msg.topic === "homecore/plugins/matter/command_result" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).action === "device_command" &&
+        (msg.payload as Record<string, unknown>).status === "error" &&
+        (msg.payload as Record<string, unknown>).code === "UNSUPPORTED_DEVICE_COMMAND" &&
+        (msg.payload as Record<string, unknown>).device_id === "switch.virtual_2" &&
+        (msg.payload as Record<string, unknown>).correlation_id === "switch-brightness-1",
+      700
+    );
+
+    expect(errorResult).toBeDefined();
+
+    const switchStatePublish = published.find(
+      (msg) => msg.topic === "homecore/devices/switch.virtual_2/state"
+    );
+    expect(switchStatePublish).toBeUndefined();
 
     await controller.stop();
     await bridge.disconnect();

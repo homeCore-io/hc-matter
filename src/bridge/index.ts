@@ -290,6 +290,22 @@ export class MatterBridge {
     }
 
     const action = typeof payload.action === "string" ? payload.action : null;
+    const isKnownAdminAction =
+      action === "list_endpoints" ||
+      action === "get_endpoint" ||
+      action === "get_bridge_metrics" ||
+      action === "refresh_endpoints";
+
+    // Preserve shared command topic semantics: if this is not a known admin action
+    // but explicitly targets a device/homecore id, let forwarding logic handle it.
+    if (
+      !isKnownAdminAction &&
+      ((typeof payload.device_id === "string" && payload.device_id) ||
+        (typeof payload.homecore_id === "string" && payload.homecore_id))
+    ) {
+      return false;
+    }
+
     const correlationId =
       (typeof payload.correlation_id === "string" && payload.correlation_id) ||
       (typeof payload.correlationId === "string" && payload.correlationId) ||
@@ -599,6 +615,17 @@ export class MatterBridge {
           return withCorrelation({
             brightness_pct: Math.max(0, Math.min(100, Math.round(value))),
           });
+        }
+
+        return null;
+      }
+      case "switch": {
+        if (action === "on" || action === "off") {
+          return withCorrelation({ command: action });
+        }
+
+        if (action === "set_on" && typeof value === "boolean") {
+          return withCorrelation({ on: value });
         }
 
         return null;
