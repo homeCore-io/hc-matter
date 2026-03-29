@@ -1,6 +1,0 @@
-
-[logging]
-level       = "info"    # stderr log level (info | debug | warn | error | trace)
-rotation    = "daily"   # daily | hourly | weekly | never
-max_size_mb = 100       # rotate when file exceeds this MB; 0 = time-only
-compress    = true      # gzip rotated files in background thread

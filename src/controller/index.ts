@@ -10,11 +10,13 @@ import { MatterConfig } from "../config.js";
 import { WebSocketBridge } from "../ws-bridge.js";
 import { FabricStore } from "./fabric-store.js";
 import { DeviceRegistry, MatterDevice } from "../device-registry.js";
+import { StatePublisher } from "../state-publisher.js";
 
 export class MatterController {
   private logger: Logger;
   private fabricStore: FabricStore;
   private deviceRegistry: DeviceRegistry;
+  private statePublisher: StatePublisher;
   private commissioningActive = false;
 
   constructor(
@@ -28,7 +30,7 @@ export class MatterController {
       this.logger
     );
     this.deviceRegistry = new DeviceRegistry(this.logger);
-    // TODO: Initialize state publisher when wiring matter.js
+    this.statePublisher = new StatePublisher(wsBridge, this.logger);
   }
 
   /**
@@ -54,6 +56,9 @@ export class MatterController {
       this.logger.info("Matter controller started", {
         nodes: this.fabricStore.listNodes().length,
       });
+
+      // Phase 0 spike bootstrap: publish one synthetic OnOff light for command loop validation.
+      this.bootstrapOnOffSpikeDevice();
     } catch (error) {
       this.logger.error("Failed to start Matter controller", { error });
       throw error;
@@ -182,6 +187,7 @@ export class MatterController {
 
     const message = msg as Record<string, unknown>;
 
+    // Shape A (synthetic): { type: "device_command", device_id, command }
     if (message.type === "device_command") {
       const deviceId = message.device_id as string | undefined;
       const command = message.command as Record<string, unknown> | undefined;
@@ -191,6 +197,48 @@ export class MatterController {
           this.logger.error("Failed to handle device command", { error, deviceId });
         });
       }
+      return;
+    }
+
+    // Shape B (mqtt-forwarded): { type: "mqtt_message", topic, payload }
+    if (message.type === "mqtt_message") {
+      const topic = message.topic as string | undefined;
+      const payload = message.payload as Record<string, unknown> | undefined;
+
+      if (!topic || !payload) {
+        return;
+      }
+
+      const maybeDeviceId = this.extractDeviceIdFromCmdTopic(topic);
+      if (!maybeDeviceId) {
+        return;
+      }
+
+      this.handleDeviceCommand(maybeDeviceId, payload).catch((error) => {
+        this.logger.error("Failed to handle mqtt command", {
+          error,
+          deviceId: maybeDeviceId,
+        });
+      });
+      return;
+    }
+
+    // Shape C (topic/payload without explicit type)
+    if (typeof message.topic === "string" && message.payload && typeof message.payload === "object") {
+      const maybeDeviceId = this.extractDeviceIdFromCmdTopic(message.topic);
+      if (!maybeDeviceId) {
+        return;
+      }
+
+      this.handleDeviceCommand(
+        maybeDeviceId,
+        message.payload as Record<string, unknown>
+      ).catch((error) => {
+        this.logger.error("Failed to handle topic/payload command", {
+          error,
+          deviceId: maybeDeviceId,
+        });
+      });
     }
   }
 
@@ -209,13 +257,73 @@ export class MatterController {
 
     this.logger.debug("Handling device command", { deviceId, command });
 
-    // TODO: Route command to matter.js device
-    // For spike, just log it
+    // Phase 0 spike: support basic OnOff command semantics.
+    const normalized = this.normalizeOnOffCommand(command);
+    if (normalized.on !== undefined) {
+      await this.statePublisher.publishState(
+        deviceId,
+        { on: normalized.on },
+        { origin: "matter_controller", correlationId: normalized.correlationId }
+      );
+    }
+
     this.logger.info("Device command executed", {
       deviceId,
       command,
       endpointId: device.endpointId,
+      normalized,
     });
+  }
+
+  private normalizeOnOffCommand(command: Record<string, unknown>): {
+    on?: boolean;
+    correlationId?: string;
+  } {
+    const correlationId =
+      (typeof command.correlation_id === "string" && command.correlation_id) ||
+      (typeof command.correlationId === "string" && command.correlationId) ||
+      undefined;
+
+    if (typeof command.on === "boolean") {
+      return { on: command.on, correlationId };
+    }
+
+    const raw = command.command;
+    if (raw === "on") {
+      return { on: true, correlationId };
+    }
+    if (raw === "off") {
+      return { on: false, correlationId };
+    }
+
+    return { correlationId };
+  }
+
+  private extractDeviceIdFromCmdTopic(topic: string): string | null {
+    // Expected: homecore/devices/{device_id}/cmd
+    const match = topic.match(/^homecore\/devices\/([^/]+)\/cmd$/);
+    if (!match) {
+      return null;
+    }
+    return match[1];
+  }
+
+  private bootstrapOnOffSpikeDevice(): void {
+    const spikeDeviceId = "matter_spike_light_1";
+    this.registerDevice("spike-node-1", {
+      nodeId: "spike-node-1",
+      endpointId: 1,
+      matterType: "OnOffLight",
+      homecoreId: spikeDeviceId,
+      homecoreType: "light",
+      clusters: [6], // OnOff cluster
+    });
+
+    this.statePublisher
+      .publishState(spikeDeviceId, { on: false }, { origin: "matter_controller" })
+      .catch((error) => {
+        this.logger.error("Failed to publish spike bootstrap state", { error });
+      });
   }
 
   /**

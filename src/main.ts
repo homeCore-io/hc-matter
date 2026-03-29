@@ -129,6 +129,12 @@ async function main(): Promise<void> {
     logger.warn("Disconnected from HomeCore MQTT bridge");
   });
 
+  wsBridge.on("error", (error) => {
+    logger.warn("WebSocket bridge emitted error", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+
   // Start WebSocket connection with retry logic
   let attempt = 1;
   while (attempt <= MAX_ATTEMPTS) {

@@ -14,6 +14,7 @@ import { Logger } from "../src/logger.js";
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
+import { WebSocketServer } from "ws";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const testDir = path.join(__dirname, "..", "test_data");
@@ -181,5 +182,123 @@ level = "debug"
     expect(pairingCode).toBeDefined();
     expect(typeof pairingCode).toBe("string");
     expect(pairingCode).toMatch(/\d{8}-\d{4}/);
+  });
+
+  it("should connect websocket bridge and exchange publish/subscribe frames", async () => {
+    const port = 19111;
+    const server = new WebSocketServer({ port });
+    const received: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridge = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        received.push(parsed);
+      });
+    });
+
+    await bridge.connect();
+    await bridge.register("matter", ["controller"], "1.0.0");
+    await bridge.subscribe("homecore/devices/+/cmd");
+    await bridge.publish("homecore/devices/matter_spike_light_1/state", { on: true });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(received.some((m) => m.type === "register")).toBe(true);
+    expect(received.some((m) => m.type === "subscribe")).toBe(true);
+    expect(received.some((m) => m.type === "publish")).toBe(true);
+
+    await bridge.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
+  it("should apply OnOff commands and publish updated state", async () => {
+    const port = 19112;
+    const server = new WebSocketServer({ port });
+    const published: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridge = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (parsed.type === "publish") {
+          published.push(parsed);
+        }
+      });
+    });
+
+    await bridge.connect();
+
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const controller = new MatterController(config, bridge, logger);
+    await controller.start();
+
+    // Push mqtt-style command from server to client.
+    for (const client of server.clients) {
+      client.send(
+        JSON.stringify({
+          type: "mqtt_message",
+          topic: "homecore/devices/matter_spike_light_1/cmd",
+          payload: { command: "on", correlation_id: "test-corr-1" },
+        })
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const statePublish = published.find(
+      (msg) =>
+        msg.topic === "homecore/devices/matter_spike_light_1/state" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).on === true
+    );
+
+    expect(statePublish).toBeDefined();
+
+    await controller.stop();
+    await bridge.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
   });
 });

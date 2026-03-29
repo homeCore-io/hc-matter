@@ -12,6 +12,7 @@ export class WebSocketBridge extends EventEmitter {
   private reconnectDelayMs: number;
   private maxReconnectAttempts: number;
   private reconnectCount = 0;
+  private shouldReconnect = true;
   private logger: Logger;
 
   constructor(
@@ -28,12 +29,15 @@ export class WebSocketBridge extends EventEmitter {
    * Establish WebSocket connection to HomeCore MQTT bridge
    */
   async connect(): Promise<void> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       this.logger.debug(`Connecting to ${this.wsUrl}`);
+      this.shouldReconnect = true;
 
       this.ws = new WebSocket(this.wsUrl);
+      let settled = false;
 
       this.ws.on("open", () => {
+        settled = true;
         this.logger.info("WebSocket connected");
         this.reconnectCount = 0;
         this.emit("connected");
@@ -52,12 +56,18 @@ export class WebSocketBridge extends EventEmitter {
       this.ws.on("error", (error: Error) => {
         this.logger.error("WebSocket error", { error: error.message });
         this.emit("error", error);
+        if (!settled) {
+          settled = true;
+          reject(error);
+        }
       });
 
       this.ws.on("close", () => {
         this.logger.warn("WebSocket closed");
         this.emit("disconnected");
-        this.attemptReconnect();
+        if (this.shouldReconnect) {
+          this.attemptReconnect();
+        }
       });
     });
   }
@@ -153,6 +163,7 @@ export class WebSocketBridge extends EventEmitter {
    */
   async disconnect(): Promise<void> {
     if (this.ws) {
+      this.shouldReconnect = false;
       this.ws.close();
       this.ws = null;
       this.logger.info("WebSocket disconnected");
