@@ -38,6 +38,7 @@ export interface RuntimeSubscriptionMetrics {
 }
 
 type OnOffChangedHandler = (on: boolean) => Promise<void> | void;
+type BrightnessChangedHandler = (brightnessPct: number) => Promise<void> | void;
 
 export class MatterRuntime {
   private logger: Logger;
@@ -45,6 +46,7 @@ export class MatterRuntime {
   private lightEndpoint: unknown | null = null;
   private bootstrapDevice: RuntimeBootstrapDevice | null = null;
   private onOnOffChanged: OnOffChangedHandler | null = null;
+  private onBrightnessChanged: BrightnessChangedHandler | null = null;
   private runPromise: Promise<void> | null = null;
   private started = false;
   private lastPairingCode: string | null = null;
@@ -83,6 +85,10 @@ export class MatterRuntime {
 
   setOnOffChangedHandler(handler: OnOffChangedHandler): void {
     this.onOnOffChanged = handler;
+  }
+
+  setBrightnessChangedHandler(handler: BrightnessChangedHandler): void {
+    this.onBrightnessChanged = handler;
   }
 
   getSubscriptionMetrics(): RuntimeSubscriptionMetrics {
@@ -174,6 +180,7 @@ export class MatterRuntime {
       };
 
       this.installOnOffChangeListener(lightEndpoint);
+      this.installLevelChangeListener(lightEndpoint);
       this.started = true;
 
       this.logger.info("Matter runtime started with OnOffLightDevice endpoint");
@@ -412,6 +419,7 @@ export class MatterRuntime {
 
     try {
       this.installOnOffChangeListener(this.lightEndpoint);
+      this.installLevelChangeListener(this.lightEndpoint);
       this.subscriptionMetrics.reattachSuccesses++;
       return true;
     } catch (_error) {
@@ -429,6 +437,18 @@ export class MatterRuntime {
     }
 
     await Promise.resolve(this.onOnOffChanged(on));
+  }
+
+  /**
+   * Test-only helper to exercise runtime LevelControl callbacks.
+   */
+  async emitBrightnessChangedForTest(brightnessPct: number): Promise<void> {
+    if (!this.onBrightnessChanged) {
+      return;
+    }
+
+    const clampedPct = Math.max(0, Math.min(100, Math.round(brightnessPct)));
+    await Promise.resolve(this.onBrightnessChanged(clampedPct));
   }
 
   private installOnOffChangeListener(endpoint: unknown): void {
@@ -451,6 +471,32 @@ export class MatterRuntime {
       });
     } catch (error) {
       this.logger.warn("Failed to install OnOff change listener", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private installLevelChangeListener(endpoint: unknown): void {
+    try {
+      const maybeEvents = (endpoint as any)?.events?.levelControl?.currentLevel$Change;
+      if (typeof maybeEvents?.on !== "function") {
+        return;
+      }
+
+      maybeEvents.on((newValue: unknown) => {
+        if (typeof newValue !== "number" || !this.onBrightnessChanged) {
+          return;
+        }
+
+        const brightnessPct = Math.max(0, Math.min(100, Math.round((newValue / 254) * 100)));
+        Promise.resolve(this.onBrightnessChanged(brightnessPct)).catch((error) => {
+          this.logger.warn("Brightness change handler failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      });
+    } catch (error) {
+      this.logger.warn("Failed to install LevelControl change listener", {
         error: error instanceof Error ? error.message : String(error),
       });
     }

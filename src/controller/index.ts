@@ -92,6 +92,13 @@ export class MatterController {
     this.matterRuntime.setOnOffChangedHandler(async (on: boolean) => {
       await this.statePublisher.publishState(this.runtimeDeviceId, { on }, { origin: "matter_runtime" });
     });
+    this.matterRuntime.setBrightnessChangedHandler(async (brightnessPct: number) => {
+      await this.statePublisher.publishState(
+        this.runtimeDeviceId,
+        { brightness_pct: brightnessPct },
+        { origin: "matter_runtime" }
+      );
+    });
   }
 
   /**
@@ -708,6 +715,13 @@ export class MatterController {
    */
   async simulateRuntimeOnOffChangedForTest(on: boolean): Promise<void> {
     await this.matterRuntime.emitOnOffChangedForTest(on);
+  }
+
+  /**
+   * Test helper to simulate runtime-originated brightness updates without hardware.
+   */
+  async simulateRuntimeBrightnessChangedForTest(brightnessPct: number): Promise<void> {
+    await this.matterRuntime.emitBrightnessChangedForTest(brightnessPct);
   }
 
   private async publishControllerState(): Promise<void> {
