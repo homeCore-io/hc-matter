@@ -574,6 +574,180 @@ level = "debug"
     });
   });
 
+  it("should handle reinterview action when node exists", async () => {
+    const port = 19120;
+    const server = new WebSocketServer({ port });
+    const published: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridge = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (parsed.type === "publish") {
+          published.push(parsed);
+        }
+      });
+    });
+
+    await bridge.connect();
+
+    const logger = new Logger("test");
+    const storageDir = path.join(testDir, "matter-store-controller-reinterview-success");
+    const config = {
+      storage_dir: storageDir,
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const seedStore = new FabricStore(path.join(storageDir, "fabric_store.json"), logger);
+    await seedStore.load();
+    seedStore.registerNode("node-1", {
+      1: {
+        id: 1,
+        clusters: {
+          6: { id: 6, attributes: {} },
+        },
+      },
+    });
+    await seedStore.save();
+
+    const controller = new MatterController(config, bridge, logger);
+    await controller.start();
+
+    bridge.emit("message", {
+      type: "mqtt_message",
+      topic: "homecore/devices/matter_controller/cmd",
+      payload: { action: "reinterview", node_id: "node-1", correlation_id: "ok-1" },
+    });
+
+    const result = await waitForPublishedMessage(
+      published,
+      (msg) =>
+        msg.topic === "homecore/plugins/matter/command_result" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).action === "reinterview" &&
+        (msg.payload as Record<string, unknown>).status === "ok" &&
+        (msg.payload as Record<string, unknown>).node_id === "node-1" &&
+        (msg.payload as Record<string, unknown>).correlation_id === "ok-1",
+      500
+    );
+
+    expect(result).toBeDefined();
+
+    await controller.stop();
+    await bridge.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
+  it("should handle remove_node action when node exists", async () => {
+    const port = 19121;
+    const server = new WebSocketServer({ port });
+    const published: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridge = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (parsed.type === "publish") {
+          published.push(parsed);
+        }
+      });
+    });
+
+    await bridge.connect();
+
+    const logger = new Logger("test");
+    const storageDir = path.join(testDir, "matter-store-controller-remove-success");
+    const config = {
+      storage_dir: storageDir,
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const seedStore = new FabricStore(path.join(storageDir, "fabric_store.json"), logger);
+    await seedStore.load();
+    seedStore.registerNode("node-2", {
+      1: {
+        id: 1,
+        clusters: {
+          6: { id: 6, attributes: {} },
+        },
+      },
+    });
+    await seedStore.save();
+
+    const controller = new MatterController(config, bridge, logger);
+    await controller.start();
+
+    bridge.emit("message", {
+      type: "mqtt_message",
+      topic: "homecore/devices/matter_controller/cmd",
+      payload: { action: "remove_node", node_id: "node-2", correlation_id: "ok-2" },
+    });
+
+    const result = await waitForPublishedMessage(
+      published,
+      (msg) =>
+        msg.topic === "homecore/plugins/matter/command_result" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).action === "remove_node" &&
+        (msg.payload as Record<string, unknown>).status === "ok" &&
+        (msg.payload as Record<string, unknown>).node_id === "node-2" &&
+        (msg.payload as Record<string, unknown>).correlation_id === "ok-2",
+      500
+    );
+
+    expect(result).toBeDefined();
+
+    const verifyStore = new FabricStore(path.join(storageDir, "fabric_store.json"), logger);
+    await verifyStore.load();
+    expect(verifyStore.getNode("node-2")).toBeUndefined();
+
+    await controller.stop();
+    await bridge.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
   it("should return structured error for unknown matter_controller action", async () => {
     const port = 19115;
     const server = new WebSocketServer({ port });

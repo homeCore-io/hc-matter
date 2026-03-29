@@ -112,7 +112,7 @@ export class MatterController {
       });
 
       // Bootstrap device registration/state source.
-      if (!this.bootstrapRuntimeOnOffDevice()) {
+      if (!(await this.bootstrapRuntimeOnOffDevice())) {
         // Fallback for spike mode when runtime is disabled/unavailable.
         this.bootstrapOnOffSpikeDevice();
       }
@@ -521,7 +521,7 @@ export class MatterController {
       });
   }
 
-  private bootstrapRuntimeOnOffDevice(): boolean {
+  private async bootstrapRuntimeOnOffDevice(): Promise<boolean> {
     const runtimeDevice = this.matterRuntime.getBootstrapDevice();
     if (!runtimeDevice) {
       return false;
@@ -537,6 +537,20 @@ export class MatterController {
       homecoreType: runtimeDevice.homecoreType,
       clusters: runtimeDevice.clusters,
     });
+
+    if (!this.fabricStore.getNode(runtimeDevice.nodeId)) {
+      this.fabricStore.registerNode(runtimeDevice.nodeId, {
+        [runtimeDevice.endpointId]: {
+          id: runtimeDevice.endpointId,
+          clusters: runtimeDevice.clusters.reduce<Record<number, { id: number; attributes: Record<number, unknown> }>>((acc, clusterId) => {
+            acc[clusterId] = { id: clusterId, attributes: {} };
+            return acc;
+          }, {}),
+        },
+      });
+
+      await this.fabricStore.save();
+    }
 
     this.statePublisher
       .publishState(runtimeDevice.homecoreId, { on: false }, { origin: "matter_runtime" })
