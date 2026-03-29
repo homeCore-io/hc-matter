@@ -588,7 +588,7 @@ export class MatterController {
           applied = true;
           runtimeApplied = this.matterRuntime.isStarted();
         }
-      } else {
+      } else if (device.homecoreType === "light" || device.homecoreType === "dimmer_light") {
         const parsed = this.normalizeLightCommand(command);
         normalized = parsed;
 
@@ -613,6 +613,10 @@ export class MatterController {
           applied = true;
           runtimeApplied = this.matterRuntime.isStarted() || runtimeApplied;
         }
+      } else {
+        normalized = {
+          unsupported_type: device.homecoreType,
+        };
       }
 
       if (!applied) {

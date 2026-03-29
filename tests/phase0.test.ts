@@ -1958,6 +1958,96 @@ level = "debug"
     });
   });
 
+  it("should reject actuator commands for non-actuator device types", async () => {
+    const port = 19375;
+    const server = new WebSocketServer({ port });
+    const published: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridge = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (parsed.type === "publish") {
+          published.push(parsed);
+        }
+      });
+    });
+
+    await bridge.connect();
+
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store-non-actuator-reject"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const controller = new MatterController(config, bridge, logger);
+    await controller.start();
+    controller.registerDevice("sensor-node-1", {
+      nodeId: "sensor-node-1",
+      endpointId: 10,
+      matterType: "TemperatureSensor",
+      homecoreId: "temp.virtual_1",
+      homecoreType: "temp_sensor",
+      clusters: [1026],
+    });
+
+    for (const client of server.clients) {
+      client.send(
+        JSON.stringify({
+          type: "mqtt_message",
+          topic: "homecore/devices/temp.virtual_1/cmd",
+          payload: { command: "on", correlation_id: "non-actuator-1" },
+        })
+      );
+    }
+
+    const errorResult = await waitForPublishedMessage(
+      published,
+      (msg) =>
+        msg.topic === "homecore/plugins/matter/command_result" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).action === "device_command" &&
+        (msg.payload as Record<string, unknown>).status === "error" &&
+        (msg.payload as Record<string, unknown>).code === "UNSUPPORTED_DEVICE_COMMAND" &&
+        (msg.payload as Record<string, unknown>).device_id === "temp.virtual_1" &&
+        (msg.payload as Record<string, unknown>).correlation_id === "non-actuator-1",
+      700
+    );
+
+    expect(errorResult).toBeDefined();
+
+    const sensorStatePublish = published.find(
+      (msg) => msg.topic === "homecore/devices/temp.virtual_1/state"
+    );
+    expect(sensorStatePublish).toBeUndefined();
+
+    await controller.stop();
+    await bridge.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
   it("should apply brightness commands and publish updated state", async () => {
     const port = 19114;
     const server = new WebSocketServer({ port });
