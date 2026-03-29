@@ -44,6 +44,16 @@ const RemoveNodePayloadSchema = z.object({
   correlationId: z.string().optional(),
 });
 
+class ControllerCommandError extends Error {
+  constructor(
+    public readonly code: string,
+    message: string
+  ) {
+    super(message);
+    this.name = "ControllerCommandError";
+  }
+}
+
 export class MatterController {
   private logger: Logger;
   private fabricStore: FabricStore;
@@ -184,10 +194,16 @@ export class MatterController {
    * Reinterview a node (refresh endpoints and clusters)
    */
   async reinterview(nodeId: string): Promise<void> {
+    const node = this.fabricStore.getNode(nodeId);
+    if (!node) {
+      throw new ControllerCommandError("NODE_NOT_FOUND", `Node not found: ${nodeId}`);
+    }
+
     this.logger.info("Reinterviewing node", { nodeId });
 
     // TODO: Query node endpoints and clusters from matter.js
     // TODO: Update device registry with new/removed endpoints
+    this.fabricStore.updateNodeEndpoints(nodeId, node.endpoints);
 
     this.logger.info("Reinterview completed", { nodeId });
   }
@@ -196,6 +212,11 @@ export class MatterController {
    * Remove a commissioned node
    */
   async removeNode(nodeId: string): Promise<void> {
+    const node = this.fabricStore.getNode(nodeId);
+    if (!node) {
+      throw new ControllerCommandError("NODE_NOT_FOUND", `Node not found: ${nodeId}`);
+    }
+
     this.logger.info("Removing node", { nodeId });
 
     // Remove from fabric store
@@ -306,13 +327,11 @@ export class MatterController {
       try {
         await this.handleControllerCommand(command);
       } catch (error) {
+        const errorDetails = this.toControllerError(error);
         await this.publishCommandResult(
           typeof command.action === "string" ? command.action : "unknown",
           "error",
-          {
-            error: error instanceof Error ? error.message : String(error),
-            code: "INVALID_CONTROLLER_COMMAND",
-          },
+          errorDetails,
           this.extractCorrelationId(command)
         );
       }
@@ -433,6 +452,22 @@ export class MatterController {
       correlation_id: correlationId,
       timestamp: new Date().toISOString(),
     });
+  }
+
+  private toControllerError(error: unknown): { error: string; code: string } {
+    if (error instanceof ControllerCommandError) {
+      return { error: error.message, code: error.code };
+    }
+    if (error instanceof z.ZodError) {
+      return {
+        error: "Invalid controller command payload",
+        code: "INVALID_CONTROLLER_COMMAND",
+      };
+    }
+    return {
+      error: error instanceof Error ? error.message : String(error),
+      code: "CONTROLLER_COMMAND_FAILED",
+    };
   }
 
   private normalizeOnOffCommand(command: Record<string, unknown>): {

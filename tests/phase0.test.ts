@@ -634,6 +634,8 @@ level = "debug"
     );
 
     expect(errorResult).toBeDefined();
+    const errorPayload = (errorResult as Record<string, unknown>).payload as Record<string, unknown>;
+    expect(errorPayload.code).toBe("INVALID_CONTROLLER_COMMAND");
 
     await controller.stop();
     await bridge.disconnect();
@@ -708,6 +710,154 @@ level = "debug"
     );
 
     expect(errorResult).toBeDefined();
+    const errorPayload = (errorResult as Record<string, unknown>).payload as Record<string, unknown>;
+    expect(errorPayload.code).toBe("INVALID_CONTROLLER_COMMAND");
+
+    await controller.stop();
+    await bridge.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
+  it("should return NODE_NOT_FOUND when remove_node targets unknown node", async () => {
+    const port = 19118;
+    const server = new WebSocketServer({ port });
+    const published: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridge = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (parsed.type === "publish") {
+          published.push(parsed);
+        }
+      });
+    });
+
+    await bridge.connect();
+
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store-controller-node-errors"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const controller = new MatterController(config, bridge, logger);
+    await controller.start();
+
+    bridge.emit("message", {
+      type: "mqtt_message",
+      topic: "homecore/devices/matter_controller/cmd",
+      payload: { action: "remove_node", node_id: "node-does-not-exist", correlation_id: "bad-3" },
+    });
+
+    const errorResult = await waitForPublishedMessage(
+      published,
+      (msg) =>
+        msg.topic === "homecore/plugins/matter/command_result" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).action === "remove_node" &&
+        (msg.payload as Record<string, unknown>).status === "error" &&
+        (msg.payload as Record<string, unknown>).correlation_id === "bad-3",
+      500
+    );
+
+    expect(errorResult).toBeDefined();
+    const errorPayload = (errorResult as Record<string, unknown>).payload as Record<string, unknown>;
+    expect(errorPayload.code).toBe("NODE_NOT_FOUND");
+
+    await controller.stop();
+    await bridge.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
+  it("should return NODE_NOT_FOUND when reinterview targets unknown node", async () => {
+    const port = 19119;
+    const server = new WebSocketServer({ port });
+    const published: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridge = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (parsed.type === "publish") {
+          published.push(parsed);
+        }
+      });
+    });
+
+    await bridge.connect();
+
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store-controller-node-errors-2"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const controller = new MatterController(config, bridge, logger);
+    await controller.start();
+
+    bridge.emit("message", {
+      type: "mqtt_message",
+      topic: "homecore/devices/matter_controller/cmd",
+      payload: { action: "reinterview", node_id: "node-does-not-exist", correlation_id: "bad-4" },
+    });
+
+    const errorResult = await waitForPublishedMessage(
+      published,
+      (msg) =>
+        msg.topic === "homecore/plugins/matter/command_result" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).action === "reinterview" &&
+        (msg.payload as Record<string, unknown>).status === "error" &&
+        (msg.payload as Record<string, unknown>).correlation_id === "bad-4",
+      500
+    );
+
+    expect(errorResult).toBeDefined();
+    const errorPayload = (errorResult as Record<string, unknown>).payload as Record<string, unknown>;
+    expect(errorPayload.code).toBe("NODE_NOT_FOUND");
 
     await controller.stop();
     await bridge.disconnect();
