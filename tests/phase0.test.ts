@@ -752,6 +752,90 @@ level = "debug"
     });
   });
 
+  it("should set runtime_applied=true for reinterview when runtime simulation is enabled", async () => {
+    const previousSimulate = process.env.HC_MATTER_SIMULATE_RUNTIME;
+    process.env.HC_MATTER_SIMULATE_RUNTIME = "1";
+
+    try {
+      const port = 19122;
+      const server = new WebSocketServer({ port });
+      const published: Array<Record<string, unknown>> = [];
+
+      await new Promise<void>((resolve) => {
+        server.on("listening", () => resolve());
+      });
+
+      const bridge = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+        reconnectDelayMs: 50,
+        maxReconnectAttempts: 1,
+      });
+
+      server.on("connection", (socket) => {
+        socket.on("message", (raw) => {
+          const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+          if (parsed.type === "publish") {
+            published.push(parsed);
+          }
+        });
+      });
+
+      await bridge.connect();
+
+      const logger = new Logger("test");
+      const config = {
+        storage_dir: path.join(testDir, "matter-store-controller-runtime-sim"),
+        security_provider: "plaintext" as const,
+        security_key_env_var: "HC_MATTER_STORE_KEY",
+        instance_name: "TestCore",
+        passcode_default: 12345678,
+        discriminator_default: 3840,
+      };
+
+      const controller = new MatterController(config, bridge, logger);
+      await controller.start();
+
+      bridge.emit("message", {
+        type: "mqtt_message",
+        topic: "homecore/devices/matter_controller/cmd",
+        payload: { action: "reinterview", node_id: "runtime-node-1", correlation_id: "sim-1" },
+      });
+
+      const result = await waitForPublishedMessage(
+        published,
+        (msg) =>
+          msg.topic === "homecore/plugins/matter/command_result" &&
+          typeof msg.payload === "object" &&
+          msg.payload !== null &&
+          (msg.payload as Record<string, unknown>).action === "reinterview" &&
+          (msg.payload as Record<string, unknown>).status === "ok" &&
+          (msg.payload as Record<string, unknown>).correlation_id === "sim-1",
+        700
+      );
+
+      expect(result).toBeDefined();
+      const payload = (result as Record<string, unknown>).payload as Record<string, unknown>;
+      expect(payload.runtime_applied).toBe(true);
+
+      await controller.stop();
+      await bridge.disconnect();
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve();
+          }
+        });
+      });
+    } finally {
+      if (previousSimulate === undefined) {
+        delete process.env.HC_MATTER_SIMULATE_RUNTIME;
+      } else {
+        process.env.HC_MATTER_SIMULATE_RUNTIME = previousSimulate;
+      }
+    }
+  });
+
   it("should return structured error for unknown matter_controller action", async () => {
     const port = 19115;
     const server = new WebSocketServer({ port });

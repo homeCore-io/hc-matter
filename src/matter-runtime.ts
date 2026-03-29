@@ -67,6 +67,23 @@ export class MatterRuntime {
       return;
     }
 
+    // Deterministic runtime simulation path for tests/CI when full matter.js startup is unavailable.
+    if (process.env.HC_MATTER_SIMULATE_RUNTIME === "1") {
+      this.bootstrapDevice = {
+        nodeId: "runtime-node-1",
+        endpointId: 1,
+        homecoreId: "matter_runtime_light_1",
+        homecoreType: "light",
+        matterType: "OnOffLight",
+        clusters: [6],
+      };
+      this.node = {};
+      this.lightEndpoint = {};
+      this.started = true;
+      this.logger.info("Matter runtime simulation mode enabled");
+      return;
+    }
+
     // Feature gate while controller/commissioning integration is still evolving.
     if (process.env.HC_MATTER_ENABLE_RUNTIME !== "1") {
       this.logger.info("Matter runtime disabled (set HC_MATTER_ENABLE_RUNTIME=1 to enable)");
