@@ -390,10 +390,19 @@ export class MatterController {
       }
       case "nodes":
       case "status": {
+        const nodes = await this.getNodes();
+        const status = await this.getStatus();
         await this.publishCommandResult(
           action,
           "ok",
-          { info: this.getCommissioningInfo() },
+          {
+            info: this.getCommissioningInfo(),
+            controller_status: status,
+            nodes: nodes.map((node) => ({
+              node_id: node.nodeId,
+              device_count: node.deviceCount,
+            })),
+          },
           correlationId
         );
         break;

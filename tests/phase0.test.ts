@@ -19,6 +19,24 @@ import { WebSocketServer } from "ws";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const testDir = path.join(__dirname, "..", "test_data");
 
+async function waitForPublishedMessage(
+  published: Array<Record<string, unknown>>,
+  predicate: (msg: Record<string, unknown>) => boolean,
+  timeoutMs = 500
+): Promise<Record<string, unknown> | undefined> {
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    const found = published.find(predicate);
+    if (found) {
+      return found;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+
+  return undefined;
+}
+
 describe("Phase 0 Spike - Core Components", () => {
   beforeAll(() => {
     // Setup test directory
@@ -466,6 +484,82 @@ level = "debug"
 
     expect(commandResult).toBeDefined();
     expect(controllerState).toBeDefined();
+
+    await controller.stop();
+    await bridge.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
+  it("should return enriched status payload for matter_controller status action", async () => {
+    const port = 19117;
+    const server = new WebSocketServer({ port });
+    const published: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridge = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (parsed.type === "publish") {
+          published.push(parsed);
+        }
+      });
+    });
+
+    await bridge.connect();
+
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store-controller-status"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const controller = new MatterController(config, bridge, logger);
+    await controller.start();
+
+    bridge.emit("message", {
+      type: "mqtt_message",
+      topic: "homecore/devices/matter_controller/cmd",
+      payload: { action: "status", correlation_id: "status-1" },
+    });
+
+    const statusResult = await waitForPublishedMessage(
+      published,
+      (msg) =>
+        msg.topic === "homecore/plugins/matter/command_result" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).action === "status",
+      500
+    );
+
+    expect(statusResult).toBeDefined();
+
+    const payload = (statusResult as Record<string, unknown>).payload as Record<string, unknown>;
+    expect(payload.status).toBe("ok");
+    expect(payload.correlation_id).toBe("status-1");
+    expect(payload.info).toBeDefined();
+    expect(payload.controller_status).toBeDefined();
+    expect(Array.isArray(payload.nodes)).toBe(true);
 
     await controller.stop();
     await bridge.disconnect();
