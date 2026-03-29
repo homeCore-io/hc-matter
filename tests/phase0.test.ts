@@ -10,6 +10,7 @@ import { DeviceRegistry } from "../src/device-registry.js";
 import { StatePublisher } from "../src/state-publisher.js";
 import { WebSocketBridge } from "../src/ws-bridge.js";
 import { MatterController } from "../src/controller/index.js";
+import { MatterBridge } from "../src/bridge/index.js";
 import { Logger } from "../src/logger.js";
 import * as fs from "fs";
 import * as path from "path";
@@ -235,6 +236,88 @@ level = "debug"
     expect(received.some((m) => m.type === "publish")).toBe(true);
 
     await bridge.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
+  it("should initialize bridge endpoints and track inbound device state", async () => {
+    const port = 19115;
+    const server = new WebSocketServer({ port });
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridgeWs = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    await bridgeWs.connect();
+
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store-bridge"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const controller = new MatterController(config, bridgeWs, logger);
+    await controller.start();
+
+    const matterBridge = new MatterBridge(
+      {
+        enabled: true,
+        include_ids: ["matter_spike_*"],
+        exclude_ids: [],
+      },
+      controller,
+      bridgeWs,
+      logger
+    );
+    await matterBridge.start();
+
+    let endpoints = await matterBridge.getEndpoints();
+    expect(endpoints).toHaveLength(1);
+    expect(endpoints[0].homecoreId).toBe("matter_spike_light_1");
+
+    for (const client of server.clients) {
+      client.send(
+        JSON.stringify({
+          type: "mqtt_message",
+          topic: "homecore/devices/matter_spike_light_1/state",
+          payload: {
+            on: true,
+            brightness_pct: 42,
+            origin: "test",
+          },
+        })
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    endpoints = await matterBridge.getEndpoints();
+    expect(endpoints[0].lastState).toMatchObject({
+      on: true,
+      brightness_pct: 42,
+      origin: "test",
+    });
+    expect(endpoints[0].lastUpdatedAt).toBeDefined();
+
+    await matterBridge.stop();
+    await controller.stop();
+    await bridgeWs.disconnect();
     await new Promise<void>((resolve, reject) => {
       server.close((err) => {
         if (err) {
