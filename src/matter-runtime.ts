@@ -8,10 +8,24 @@
 
 import { Logger } from "./logger.js";
 
+export interface RuntimeBootstrapDevice {
+  nodeId: string;
+  endpointId: number;
+  homecoreId: string;
+  homecoreType: string;
+  matterType: string;
+  clusters: number[];
+}
+
+type OnOffChangedHandler = (on: boolean) => Promise<void> | void;
+
 export class MatterRuntime {
   private logger: Logger;
   private node: unknown | null = null;
   private lightEndpoint: unknown | null = null;
+  private bootstrapDevice: RuntimeBootstrapDevice | null = null;
+  private onOnOffChanged: OnOffChangedHandler | null = null;
+  private runPromise: Promise<void> | null = null;
   private started = false;
 
   constructor(parentLogger: Logger) {
@@ -20,6 +34,14 @@ export class MatterRuntime {
 
   isStarted(): boolean {
     return this.started;
+  }
+
+  getBootstrapDevice(): RuntimeBootstrapDevice | null {
+    return this.bootstrapDevice;
+  }
+
+  setOnOffChangedHandler(handler: OnOffChangedHandler): void {
+    this.onOnOffChanged = handler;
   }
 
   /**
@@ -44,6 +66,7 @@ export class MatterRuntime {
       const ServerNode = matterMain.ServerNode as {
         create: () => Promise<{
           add: (deviceType: unknown) => Promise<unknown>;
+          start?: () => Promise<void>;
           run: () => Promise<void>;
           close?: () => Promise<void>;
           cancel?: () => Promise<void>;
@@ -58,10 +81,35 @@ export class MatterRuntime {
 
       const node = await ServerNode.create();
       const lightEndpoint = await node.add(OnOffLightDevice);
-      await node.run();
+
+      if (typeof node.start === "function") {
+        await node.start();
+      } else {
+        // Some matter.js node variants expose only run(); run in background to avoid blocking plugin startup.
+        this.runPromise = node.run().catch((error) => {
+          this.logger.warn("Matter runtime background run() exited with error", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
+
+      const endpointNumber =
+        typeof (lightEndpoint as { number?: unknown }).number === "number"
+          ? ((lightEndpoint as { number: number }).number)
+          : 1;
 
       this.node = node;
       this.lightEndpoint = lightEndpoint;
+      this.bootstrapDevice = {
+        nodeId: "runtime-node-1",
+        endpointId: endpointNumber,
+        homecoreId: "matter_runtime_light_1",
+        homecoreType: "light",
+        matterType: "OnOffLight",
+        clusters: [6],
+      };
+
+      this.installOnOffChangeListener(lightEndpoint);
       this.started = true;
 
       this.logger.info("Matter runtime started with OnOffLightDevice endpoint");
@@ -104,6 +152,7 @@ export class MatterRuntime {
   async stop(): Promise<void> {
     if (!this.node) {
       this.started = false;
+      this.bootstrapDevice = null;
       return;
     }
 
@@ -114,6 +163,10 @@ export class MatterRuntime {
       } else if (typeof node.cancel === "function") {
         await node.cancel();
       }
+
+      if (this.runPromise) {
+        await this.runPromise;
+      }
     } catch (error) {
       this.logger.warn("Matter runtime shutdown encountered an error", {
         error: error instanceof Error ? error.message : String(error),
@@ -121,8 +174,35 @@ export class MatterRuntime {
     } finally {
       this.node = null;
       this.lightEndpoint = null;
+      this.bootstrapDevice = null;
+      this.runPromise = null;
       this.started = false;
       this.logger.info("Matter runtime stopped");
+    }
+  }
+
+  private installOnOffChangeListener(endpoint: unknown): void {
+    try {
+      const maybeEvents = (endpoint as any)?.events?.onOff?.onOff$Change;
+      if (typeof maybeEvents?.on !== "function") {
+        return;
+      }
+
+      maybeEvents.on((newValue: unknown) => {
+        if (typeof newValue !== "boolean" || !this.onOnOffChanged) {
+          return;
+        }
+
+        Promise.resolve(this.onOnOffChanged(newValue)).catch((error) => {
+          this.logger.warn("OnOff change handler failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      });
+    } catch (error) {
+      this.logger.warn("Failed to install OnOff change listener", {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 }

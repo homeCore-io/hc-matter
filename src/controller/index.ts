@@ -34,6 +34,10 @@ export class MatterController {
     this.deviceRegistry = new DeviceRegistry(this.logger);
     this.statePublisher = new StatePublisher(wsBridge, this.logger);
     this.matterRuntime = new MatterRuntime(this.logger);
+    this.matterRuntime.setOnOffChangedHandler(async (on: boolean) => {
+      const runtimeDeviceId = "matter_runtime_light_1";
+      await this.statePublisher.publishState(runtimeDeviceId, { on }, { origin: "matter_runtime" });
+    });
   }
 
   /**
@@ -64,8 +68,11 @@ export class MatterController {
         matter_runtime: this.matterRuntime.isStarted(),
       });
 
-      // Phase 0 spike bootstrap: publish one synthetic OnOff light for command loop validation.
-      this.bootstrapOnOffSpikeDevice();
+      // Bootstrap device registration/state source.
+      if (!this.bootstrapRuntimeOnOffDevice()) {
+        // Fallback for spike mode when runtime is disabled/unavailable.
+        this.bootstrapOnOffSpikeDevice();
+      }
     } catch (error) {
       this.logger.error("Failed to start Matter controller", { error });
       throw error;
@@ -335,6 +342,30 @@ export class MatterController {
       .catch((error) => {
         this.logger.error("Failed to publish spike bootstrap state", { error });
       });
+  }
+
+  private bootstrapRuntimeOnOffDevice(): boolean {
+    const runtimeDevice = this.matterRuntime.getBootstrapDevice();
+    if (!runtimeDevice) {
+      return false;
+    }
+
+    this.registerDevice(runtimeDevice.nodeId, {
+      nodeId: runtimeDevice.nodeId,
+      endpointId: runtimeDevice.endpointId,
+      matterType: runtimeDevice.matterType,
+      homecoreId: runtimeDevice.homecoreId,
+      homecoreType: runtimeDevice.homecoreType,
+      clusters: runtimeDevice.clusters,
+    });
+
+    this.statePublisher
+      .publishState(runtimeDevice.homecoreId, { on: false }, { origin: "matter_runtime" })
+      .catch((error) => {
+        this.logger.error("Failed to publish runtime bootstrap state", { error });
+      });
+
+    return true;
   }
 
   /**
