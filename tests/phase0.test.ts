@@ -1332,6 +1332,197 @@ level = "debug"
     });
   });
 
+  it("should forward bridge/cmd payloads addressed by exposed_endpoint_id", async () => {
+    const port = 19373;
+    const server = new WebSocketServer({ port });
+    const published: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridgeWs = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (parsed.type === "publish") {
+          published.push(parsed);
+        }
+      });
+    });
+
+    await bridgeWs.connect();
+
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store-bridge-cmd-exposed-endpoint"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const controller = new MatterController(config, bridgeWs, logger);
+    await controller.start();
+
+    const matterBridge = new MatterBridge(
+      {
+        enabled: true,
+        include_ids: ["matter_spike_*"],
+        exclude_ids: [],
+      },
+      controller,
+      bridgeWs,
+      logger
+    );
+    await matterBridge.start();
+
+    const endpoints = await matterBridge.getEndpoints();
+    const exposedEndpointId = endpoints[0].exposedEndpointId;
+
+    for (const client of server.clients) {
+      client.send(
+        JSON.stringify({
+          type: "mqtt_message",
+          topic: "homecore/plugins/matter/bridge/cmd",
+          payload: {
+            action: "set_brightness",
+            exposed_endpoint_id: exposedEndpointId,
+            value: 12,
+            correlation_id: "bridge-shared-endpoint-1",
+          },
+        })
+      );
+    }
+
+    const forwarded = await waitForPublishedMessage(
+      published,
+      (msg) =>
+        msg.topic === "homecore/devices/matter_spike_light_1/cmd" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).brightness_pct === 12 &&
+        (msg.payload as Record<string, unknown>).correlation_id ===
+          "bridge-shared-endpoint-1",
+      700
+    );
+
+    expect(forwarded).toBeDefined();
+
+    await matterBridge.stop();
+    await controller.stop();
+    await bridgeWs.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
+  it("should return ENDPOINT_NOT_FOUND for bridge/cmd exposed_endpoint_id misses", async () => {
+    const port = 19374;
+    const server = new WebSocketServer({ port });
+    const published: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridgeWs = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (parsed.type === "publish") {
+          published.push(parsed);
+        }
+      });
+    });
+
+    await bridgeWs.connect();
+
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store-bridge-cmd-exposed-endpoint-miss"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const controller = new MatterController(config, bridgeWs, logger);
+    await controller.start();
+
+    const matterBridge = new MatterBridge(
+      {
+        enabled: true,
+        include_ids: ["matter_spike_*"],
+        exclude_ids: [],
+      },
+      controller,
+      bridgeWs,
+      logger
+    );
+    await matterBridge.start();
+
+    for (const client of server.clients) {
+      client.send(
+        JSON.stringify({
+          type: "mqtt_message",
+          topic: "homecore/plugins/matter/bridge/cmd",
+          payload: {
+            action: "set_brightness",
+            exposed_endpoint_id: 65535,
+            value: 20,
+            correlation_id: "bridge-shared-endpoint-miss-1",
+          },
+        })
+      );
+    }
+
+    const errorResult = await waitForPublishedMessage(
+      published,
+      (msg) =>
+        msg.topic === "homecore/plugins/matter/command_result" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).action === "bridge_forward" &&
+        (msg.payload as Record<string, unknown>).status === "error" &&
+        (msg.payload as Record<string, unknown>).code === "ENDPOINT_NOT_FOUND" &&
+        (msg.payload as Record<string, unknown>).correlation_id ===
+          "bridge-shared-endpoint-miss-1",
+      700
+    );
+
+    expect(errorResult).toBeDefined();
+
+    await matterBridge.stop();
+    await controller.stop();
+    await bridgeWs.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
   it("should apply OnOff commands and publish updated state", async () => {
     const port = 19112;
     const server = new WebSocketServer({ port });

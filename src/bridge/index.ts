@@ -296,13 +296,14 @@ export class MatterBridge {
       action === "get_bridge_metrics" ||
       action === "refresh_endpoints";
 
+    const hasDeviceTarget =
+      (typeof payload.device_id === "string" && payload.device_id) ||
+      (typeof payload.homecore_id === "string" && payload.homecore_id) ||
+      typeof payload.exposed_endpoint_id === "number";
+
     // Preserve shared command topic semantics: if this is not a known admin action
     // but explicitly targets a device/homecore id, let forwarding logic handle it.
-    if (
-      !isKnownAdminAction &&
-      ((typeof payload.device_id === "string" && payload.device_id) ||
-        (typeof payload.homecore_id === "string" && payload.homecore_id))
-    ) {
+    if (!isKnownAdminAction && hasDeviceTarget) {
       return false;
     }
 
@@ -765,6 +766,16 @@ export class MatterBridge {
 
     if (typeof payload.homecore_id === "string" && payload.homecore_id) {
       return payload.homecore_id;
+    }
+
+    if (typeof payload.exposed_endpoint_id === "number") {
+      const endpointId = Math.floor(payload.exposed_endpoint_id);
+      const endpoint = this.findByExposedEndpointId(endpointId);
+      if (endpoint) {
+        return endpoint.homecoreId;
+      }
+
+      return `endpoint_${endpointId}`;
     }
 
     return null;
