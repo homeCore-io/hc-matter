@@ -914,6 +914,13 @@ export class MatterController {
       };
     }
 
+    if (typeof command.position_pct === "number") {
+      return {
+        position: Math.max(0, Math.min(100, Math.round(command.position_pct))),
+        correlationId,
+      };
+    }
+
     if (command.command === "open") {
       return { position: 100, correlationId };
     }
