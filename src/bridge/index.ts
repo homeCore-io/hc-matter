@@ -794,7 +794,10 @@ export class MatterBridge {
   ): string | null {
     const endpointTopic = topic.match(/^homecore\/plugins\/matter\/bridge\/endpoint\/(\d+)\/cmd$/);
     if (endpointTopic) {
-      const endpointId = Number(endpointTopic[1]);
+      const endpointId = this.parseExposedEndpointId(endpointTopic[1]);
+      if (endpointId === undefined) {
+        return this.invalidEndpointSentinel;
+      }
       const endpoint = this.findByExposedEndpointId(endpointId);
       if (endpoint) {
         return endpoint.homecoreId;
@@ -849,12 +852,15 @@ export class MatterBridge {
   }
 
   private parseExposedEndpointId(value: unknown): number | undefined {
+    const minEndpointId = 1;
+    const maxEndpointId = 65535;
+
     if (typeof value === "number") {
       if (!Number.isFinite(value)) {
         return undefined;
       }
       const endpointId = Math.floor(value);
-      if (endpointId < 1) {
+      if (endpointId < minEndpointId || endpointId > maxEndpointId) {
         return undefined;
       }
       return endpointId;
@@ -867,7 +873,11 @@ export class MatterBridge {
       }
 
       const endpointId = Number(trimmed);
-      if (!Number.isFinite(endpointId) || endpointId < 1) {
+      if (
+        !Number.isFinite(endpointId) ||
+        endpointId < minEndpointId ||
+        endpointId > maxEndpointId
+      ) {
         return undefined;
       }
 
