@@ -410,7 +410,44 @@ export class MatterController {
 
     this.logger.debug("Handling device command", { deviceId, command });
 
-    // Phase 0 spike: support basic OnOff command semantics.
+    if (device.homecoreType === "lock") {
+      const normalized = this.normalizeLockCommand(command);
+      if (normalized.locked !== undefined) {
+        await this.statePublisher.publishState(
+          deviceId,
+          { locked: normalized.locked },
+          { origin: "matter_controller", correlationId: normalized.correlationId }
+        );
+      }
+
+      this.logger.info("Device command executed", {
+        deviceId,
+        command,
+        endpointId: device.endpointId,
+        normalized,
+      });
+      return;
+    }
+
+    if (device.homecoreType === "cover") {
+      const normalized = this.normalizeCoverCommand(command);
+      if (normalized.position !== undefined) {
+        await this.statePublisher.publishState(
+          deviceId,
+          { position: normalized.position },
+          { origin: "matter_controller", correlationId: normalized.correlationId }
+        );
+      }
+
+      this.logger.info("Device command executed", {
+        deviceId,
+        command,
+        endpointId: device.endpointId,
+        normalized,
+      });
+      return;
+    }
+
     const normalized = this.normalizeLightCommand(command);
     if (normalized.on !== undefined) {
       await this.matterRuntime.setOnOff(normalized.on);
@@ -591,6 +628,57 @@ export class MatterController {
     }
 
     return normalized;
+  }
+
+  private normalizeLockCommand(command: Record<string, unknown>): {
+    locked?: boolean;
+    correlationId?: string;
+  } {
+    const correlationId =
+      (typeof command.correlation_id === "string" && command.correlation_id) ||
+      (typeof command.correlationId === "string" && command.correlationId) ||
+      undefined;
+
+    if (typeof command.locked === "boolean") {
+      return { locked: command.locked, correlationId };
+    }
+
+    if (command.command === "lock") {
+      return { locked: true, correlationId };
+    }
+
+    if (command.command === "unlock") {
+      return { locked: false, correlationId };
+    }
+
+    return { correlationId };
+  }
+
+  private normalizeCoverCommand(command: Record<string, unknown>): {
+    position?: number;
+    correlationId?: string;
+  } {
+    const correlationId =
+      (typeof command.correlation_id === "string" && command.correlation_id) ||
+      (typeof command.correlationId === "string" && command.correlationId) ||
+      undefined;
+
+    if (typeof command.position === "number") {
+      return {
+        position: Math.max(0, Math.min(100, Math.round(command.position))),
+        correlationId,
+      };
+    }
+
+    if (command.command === "open") {
+      return { position: 100, correlationId };
+    }
+
+    if (command.command === "close") {
+      return { position: 0, correlationId };
+    }
+
+    return { correlationId };
   }
 
   private extractDeviceIdFromCmdTopic(topic: string): string | null {
