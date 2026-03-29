@@ -354,6 +354,77 @@ export class MatterBridge {
       return true;
     }
 
+    if (action === "get_endpoint") {
+      const byEndpointId =
+        typeof payload.exposed_endpoint_id === "number"
+          ? this.findByExposedEndpointId(Math.floor(payload.exposed_endpoint_id))
+          : undefined;
+      const byHomecoreId =
+        typeof payload.homecore_id === "string"
+          ? this.endpoints.get(payload.homecore_id)
+          : undefined;
+      const endpoint = byEndpointId ?? byHomecoreId;
+
+      if (!endpoint) {
+        this.publishBridgeCommandResult(
+          action,
+          "error",
+          {
+            code: "ENDPOINT_NOT_FOUND",
+            error: "Bridge endpoint not found",
+          },
+          correlationId
+        ).catch((error) => {
+          this.logger.warn("Failed to publish get_endpoint not-found result", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+        return true;
+      }
+
+      this.publishBridgeCommandResult(
+        action,
+        "ok",
+        {
+          endpoint: {
+            exposed_endpoint_id: endpoint.exposedEndpointId,
+            homecore_id: endpoint.homecoreId,
+            homecore_type: endpoint.homecoreType,
+            matter_type: endpoint.matterType,
+            node_id: endpoint.nodeId,
+            endpoint_id: endpoint.endpointId,
+            clusters: endpoint.clusters,
+            last_state: endpoint.lastState,
+            last_updated_at: endpoint.lastUpdatedAt,
+          },
+        },
+        correlationId
+      ).catch((error) => {
+        this.logger.warn("Failed to publish get_endpoint bridge command result", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+
+      return true;
+    }
+
+    if (action === "get_bridge_metrics") {
+      this.publishBridgeCommandResult(
+        action,
+        "ok",
+        {
+          metrics: this.getMetrics(),
+        },
+        correlationId
+      ).catch((error) => {
+        this.logger.warn("Failed to publish get_bridge_metrics result", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+
+      return true;
+    }
+
     this.publishBridgeCommandResult(
       action ?? "unknown",
       "error",

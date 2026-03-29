@@ -634,6 +634,198 @@ level = "debug"
     });
   });
 
+  it("should return a single endpoint via get_endpoint bridge action", async () => {
+    const port = 19266;
+    const server = new WebSocketServer({ port });
+    const published: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridgeWs = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (parsed.type === "publish") {
+          published.push(parsed);
+        }
+      });
+    });
+
+    await bridgeWs.connect();
+
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store-bridge-get-endpoint"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const controller = new MatterController(config, bridgeWs, logger);
+    await controller.start();
+
+    const matterBridge = new MatterBridge(
+      {
+        enabled: true,
+        include_ids: ["matter_spike_*"],
+        exclude_ids: [],
+      },
+      controller,
+      bridgeWs,
+      logger
+    );
+    await matterBridge.start();
+
+    for (const client of server.clients) {
+      client.send(
+        JSON.stringify({
+          type: "mqtt_message",
+          topic: "homecore/plugins/matter/bridge/cmd",
+          payload: {
+            action: "get_endpoint",
+            homecore_id: "matter_spike_light_1",
+            correlation_id: "bridge-get-endpoint-1",
+          },
+        })
+      );
+    }
+
+    const result = await waitForPublishedMessage(
+      published,
+      (msg) =>
+        msg.topic === "homecore/plugins/matter/command_result" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).action === "get_endpoint" &&
+        (msg.payload as Record<string, unknown>).status === "ok" &&
+        (msg.payload as Record<string, unknown>).correlation_id ===
+          "bridge-get-endpoint-1" &&
+        typeof (msg.payload as Record<string, unknown>).endpoint === "object" &&
+        (msg.payload as Record<string, unknown>).endpoint !== null &&
+        ((msg.payload as Record<string, unknown>).endpoint as Record<string, unknown>)
+          .homecore_id === "matter_spike_light_1",
+      800
+    );
+
+    expect(result).toBeDefined();
+
+    await matterBridge.stop();
+    await controller.stop();
+    await bridgeWs.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
+  it("should return bridge metrics via get_bridge_metrics action", async () => {
+    const port = 19267;
+    const server = new WebSocketServer({ port });
+    const published: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridgeWs = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (parsed.type === "publish") {
+          published.push(parsed);
+        }
+      });
+    });
+
+    await bridgeWs.connect();
+
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store-bridge-metrics-action"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const controller = new MatterController(config, bridgeWs, logger);
+    await controller.start();
+
+    const matterBridge = new MatterBridge(
+      {
+        enabled: true,
+        include_ids: ["matter_spike_*"],
+        exclude_ids: [],
+      },
+      controller,
+      bridgeWs,
+      logger
+    );
+    await matterBridge.start();
+
+    for (const client of server.clients) {
+      client.send(
+        JSON.stringify({
+          type: "mqtt_message",
+          topic: "homecore/plugins/matter/bridge/cmd",
+          payload: {
+            action: "get_bridge_metrics",
+            correlation_id: "bridge-metrics-1",
+          },
+        })
+      );
+    }
+
+    const result = await waitForPublishedMessage(
+      published,
+      (msg) =>
+        msg.topic === "homecore/plugins/matter/command_result" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).action === "get_bridge_metrics" &&
+        (msg.payload as Record<string, unknown>).status === "ok" &&
+        (msg.payload as Record<string, unknown>).correlation_id === "bridge-metrics-1" &&
+        typeof (msg.payload as Record<string, unknown>).metrics === "object" &&
+        (msg.payload as Record<string, unknown>).metrics !== null &&
+        (((msg.payload as Record<string, unknown>).metrics as Record<string, unknown>)
+          .bridged_endpoints as number) >= 1,
+      800
+    );
+
+    expect(result).toBeDefined();
+
+    await matterBridge.stop();
+    await controller.stop();
+    await bridgeWs.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
   it("should forward bridge command topics to HomeCore device cmd topics", async () => {
     const port = 19116;
     const server = new WebSocketServer({ port });
