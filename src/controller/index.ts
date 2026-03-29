@@ -452,6 +452,10 @@ export class MatterController {
         normalized = parsed;
 
         if (parsed.locked !== undefined) {
+          runtimeApplied = await this.matterRuntime.setLockState(
+            device.homecoreId,
+            parsed.locked
+          );
           await this.statePublisher.publishState(
             deviceId,
             { locked: parsed.locked },
@@ -464,6 +468,10 @@ export class MatterController {
         normalized = parsed;
 
         if (parsed.position !== undefined) {
+          runtimeApplied = await this.matterRuntime.setCoverPosition(
+            device.homecoreId,
+            parsed.position
+          );
           await this.statePublisher.publishState(
             deviceId,
             { position: parsed.position },

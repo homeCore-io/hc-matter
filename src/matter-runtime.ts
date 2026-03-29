@@ -275,6 +275,22 @@ export class MatterRuntime {
     }
   }
 
+  async setLockState(homecoreId: string, _locked: boolean): Promise<boolean> {
+    if (!this.started) {
+      return false;
+    }
+
+    return this.hasRuntimeDevice(homecoreId, "lock");
+  }
+
+  async setCoverPosition(homecoreId: string, _position: number): Promise<boolean> {
+    if (!this.started) {
+      return false;
+    }
+
+    return this.hasRuntimeDevice(homecoreId, "cover");
+  }
+
   async openCommissioningWindow(
     passcode: number,
     discriminator?: number
@@ -526,5 +542,11 @@ export class MatterRuntime {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  private hasRuntimeDevice(homecoreId: string, homecoreType: string): boolean {
+    return this.bootstrapDevices.some(
+      (device) => device.homecoreId === homecoreId && device.homecoreType === homecoreType
+    );
   }
 }
