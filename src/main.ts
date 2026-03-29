@@ -1,6 +1,6 @@
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
-import { Logger } from "./logger.js";
+import { Logger, initializeLogger } from "./logger.js";
 import { loadConfig } from "./config.js";
 import { WebSocketBridge } from "./ws-bridge.js";
 import { MatterController } from "./controller/index.js";
@@ -9,7 +9,7 @@ import { MatterBridge } from "./bridge/index.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const logger = new Logger("main");
+let logger: Logger;
 const MAX_ATTEMPTS = 3;
 const RETRY_DELAY_SECS = 60;
 
@@ -27,10 +27,20 @@ async function main(): Promise<void> {
   const configPath =
     process.argv[2] || join(dirname(__dirname), "config", "homecore-matter.toml");
 
+  // Initialize logger before config to catch config errors
+  logger = new Logger("hc-matter");
   logger.info(`Starting hc-matter plugin (config: ${configPath})`);
 
   // Load configuration
-  const config = await loadConfig(configPath);
+  let config;
+  try {
+    config = await loadConfig(configPath);
+    logger = initializeLogger(config.logging.level, config.logging.file_path);
+  } catch (error) {
+    logger.error("Failed to load configuration", { error });
+    process.exit(1);
+  }
+
   logger.info(`Configuration loaded`, {
     ws_url: config.homecore.ws_url,
     controller_enabled: config.controller.enabled,
@@ -52,12 +62,24 @@ async function main(): Promise<void> {
     logger.info(`Received ${signal}, shutting down gracefully...`);
 
     if (controller) {
-      await controller.stop();
+      try {
+        await controller.stop();
+      } catch (error) {
+        logger.error("Error stopping controller", { error });
+      }
     }
     if (bridge) {
-      await bridge.stop();
+      try {
+        await bridge.stop();
+      } catch (error) {
+        logger.error("Error stopping bridge", { error });
+      }
     }
-    await wsBridge.disconnect();
+    try {
+      await wsBridge.disconnect();
+    } catch (error) {
+      logger.error("Error disconnecting WebSocket", { error });
+    }
 
     process.exit(0);
   };
@@ -95,6 +117,8 @@ async function main(): Promise<void> {
         bridge_enabled: config.bridge.enabled,
         timestamp: new Date().toISOString(),
       });
+
+      logger.info("Plugin initialized successfully");
     } catch (error) {
       logger.error("Failed to initialize plugin components", { error });
       process.exit(1);
@@ -132,6 +156,10 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  logger.error("Unhandled error in main", { error });
+  if (logger) {
+    logger.error("Unhandled error in main", { error });
+  } else {
+    console.error("Unhandled error before logger init", error);
+  }
   process.exit(1);
 });
