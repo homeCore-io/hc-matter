@@ -68,6 +68,9 @@ export class MatterController {
   private bridgeHandlersAttached = false;
   private readonly processedCommandIds: Map<string, number> = new Map();
   private readonly commandIdTtlMs = 5 * 60 * 1000;
+  private deviceCommandsProcessed = 0;
+  private deviceCommandsDuplicate = 0;
+  private deviceCommandsFailed = 0;
 
   private readonly onBridgeMessage = (msg: unknown) => this.handleMessage(msg);
   private readonly onBridgeConnected = () => {
@@ -407,11 +410,23 @@ export class MatterController {
     const device = this.deviceRegistry.getByHomecoreId(deviceId);
     if (!device) {
       this.logger.warn("Device not found", { deviceId });
+      this.deviceCommandsFailed++;
+      await this.publishCommandResult(
+        "device_command",
+        "error",
+        {
+          device_id: deviceId,
+          code: "DEVICE_NOT_FOUND",
+          error: `Device not found: ${deviceId}`,
+        },
+        this.extractCorrelationId(command)
+      );
       return;
     }
 
     const correlationId = this.extractCorrelationId(command);
     if (this.isDuplicateDeviceCommand(deviceId, correlationId)) {
+      this.deviceCommandsDuplicate++;
       await this.publishCommandResult(
         "device_command",
         "ok",
@@ -427,15 +442,88 @@ export class MatterController {
 
     this.logger.debug("Handling device command", { deviceId, command });
 
-    if (device.homecoreType === "lock") {
-      const normalized = this.normalizeLockCommand(command);
-      if (normalized.locked !== undefined) {
-        await this.statePublisher.publishState(
-          deviceId,
-          { locked: normalized.locked },
-          { origin: "matter_controller", correlationId: normalized.correlationId }
-        );
+    try {
+      let normalized: Record<string, unknown> = {};
+      let runtimeApplied = false;
+      let applied = false;
+
+      if (device.homecoreType === "lock") {
+        const parsed = this.normalizeLockCommand(command);
+        normalized = parsed;
+
+        if (parsed.locked !== undefined) {
+          await this.statePublisher.publishState(
+            deviceId,
+            { locked: parsed.locked },
+            { origin: "matter_controller", correlationId: parsed.correlationId }
+          );
+          applied = true;
+        }
+      } else if (device.homecoreType === "cover") {
+        const parsed = this.normalizeCoverCommand(command);
+        normalized = parsed;
+
+        if (parsed.position !== undefined) {
+          await this.statePublisher.publishState(
+            deviceId,
+            { position: parsed.position },
+            { origin: "matter_controller", correlationId: parsed.correlationId }
+          );
+          applied = true;
+        }
+      } else {
+        const parsed = this.normalizeLightCommand(command);
+        normalized = parsed;
+
+        if (parsed.on !== undefined) {
+          await this.matterRuntime.setOnOff(parsed.on);
+          await this.statePublisher.publishState(
+            deviceId,
+            { on: parsed.on },
+            { origin: "matter_controller", correlationId: parsed.correlationId }
+          );
+          applied = true;
+          runtimeApplied = this.matterRuntime.isStarted();
+        }
+
+        if (parsed.brightnessPct !== undefined) {
+          await this.matterRuntime.setBrightness(parsed.brightnessPct);
+          await this.statePublisher.publishState(
+            deviceId,
+            { brightness_pct: parsed.brightnessPct },
+            { origin: "matter_controller", correlationId: parsed.correlationId }
+          );
+          applied = true;
+          runtimeApplied = this.matterRuntime.isStarted() || runtimeApplied;
+        }
       }
+
+      if (!applied) {
+        this.deviceCommandsFailed++;
+        await this.publishCommandResult(
+          "device_command",
+          "error",
+          {
+            device_id: deviceId,
+            code: "UNSUPPORTED_DEVICE_COMMAND",
+            error: "Unsupported device command payload",
+          },
+          correlationId
+        );
+        return;
+      }
+
+      this.deviceCommandsProcessed++;
+      await this.publishCommandResult(
+        "device_command",
+        "ok",
+        {
+          device_id: deviceId,
+          runtime_applied: runtimeApplied,
+          duplicate: false,
+        },
+        correlationId
+      );
 
       this.logger.info("Device command executed", {
         deviceId,
@@ -443,55 +531,20 @@ export class MatterController {
         endpointId: device.endpointId,
         normalized,
       });
-      return;
-    }
-
-    if (device.homecoreType === "cover") {
-      const normalized = this.normalizeCoverCommand(command);
-      if (normalized.position !== undefined) {
-        await this.statePublisher.publishState(
-          deviceId,
-          { position: normalized.position },
-          { origin: "matter_controller", correlationId: normalized.correlationId }
-        );
-      }
-
-      this.logger.info("Device command executed", {
-        deviceId,
-        command,
-        endpointId: device.endpointId,
-        normalized,
-      });
-      return;
-    }
-
-    const normalized = this.normalizeLightCommand(command);
-    if (normalized.on !== undefined) {
-      await this.matterRuntime.setOnOff(normalized.on);
-
-      await this.statePublisher.publishState(
-        deviceId,
-        { on: normalized.on },
-        { origin: "matter_controller", correlationId: normalized.correlationId }
+    } catch (error) {
+      this.deviceCommandsFailed++;
+      await this.publishCommandResult(
+        "device_command",
+        "error",
+        {
+          device_id: deviceId,
+          code: "DEVICE_COMMAND_FAILED",
+          error: error instanceof Error ? error.message : String(error),
+        },
+        correlationId
       );
+      throw error;
     }
-
-    if (normalized.brightnessPct !== undefined) {
-      await this.matterRuntime.setBrightness(normalized.brightnessPct);
-
-      await this.statePublisher.publishState(
-        deviceId,
-        { brightness_pct: normalized.brightnessPct },
-        { origin: "matter_controller", correlationId: normalized.correlationId }
-      );
-    }
-
-    this.logger.info("Device command executed", {
-      deviceId,
-      command,
-      endpointId: device.endpointId,
-      normalized,
-    });
   }
 
   private isDuplicateDeviceCommand(
@@ -825,6 +878,9 @@ export class MatterController {
     runtime_subscription_reattach_attempts: number;
     runtime_subscription_reattach_successes: number;
     runtime_subscription_reattach_failures: number;
+    device_commands_processed: number;
+    device_commands_duplicates: number;
+    device_commands_failed: number;
   }> {
     const info = this.getCommissioningInfo();
     const runtimeSubscriptionMetrics = this.matterRuntime.getSubscriptionMetrics();
@@ -840,6 +896,9 @@ export class MatterController {
         runtimeSubscriptionMetrics.reattachSuccesses,
       runtime_subscription_reattach_failures:
         runtimeSubscriptionMetrics.reattachFailures,
+      device_commands_processed: this.deviceCommandsProcessed,
+      device_commands_duplicates: this.deviceCommandsDuplicate,
+      device_commands_failed: this.deviceCommandsFailed,
     };
   }
 

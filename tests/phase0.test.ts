@@ -818,6 +818,178 @@ level = "debug"
 
     expect(duplicateResult).toBeDefined();
 
+    const successResult = published.find(
+      (msg) =>
+        msg.topic === "homecore/plugins/matter/command_result" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).action === "device_command" &&
+        (msg.payload as Record<string, unknown>).status === "ok" &&
+        (msg.payload as Record<string, unknown>).duplicate === false &&
+        (msg.payload as Record<string, unknown>).correlation_id === "dedup-corr-1"
+    );
+
+    expect(successResult).toBeDefined();
+
+    const metrics = await controller.getMetrics();
+    expect(metrics.device_commands_processed).toBeGreaterThanOrEqual(1);
+    expect(metrics.device_commands_duplicates).toBeGreaterThanOrEqual(1);
+
+    await controller.stop();
+    await bridge.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
+  it("should publish error command_result for unsupported device payload", async () => {
+    const port = 19262;
+    const server = new WebSocketServer({ port });
+    const published: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridge = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (parsed.type === "publish") {
+          published.push(parsed);
+        }
+      });
+    });
+
+    await bridge.connect();
+
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store-unsupported-command"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const controller = new MatterController(config, bridge, logger);
+    await controller.start();
+
+    for (const client of server.clients) {
+      client.send(
+        JSON.stringify({
+          type: "mqtt_message",
+          topic: "homecore/devices/matter_spike_light_1/cmd",
+          payload: { unsupported: true, correlation_id: "unsupported-corr-1" },
+        })
+      );
+    }
+
+    const errorResult = await waitForPublishedMessage(
+      published,
+      (msg) =>
+        msg.topic === "homecore/plugins/matter/command_result" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).action === "device_command" &&
+        (msg.payload as Record<string, unknown>).status === "error" &&
+        (msg.payload as Record<string, unknown>).code === "UNSUPPORTED_DEVICE_COMMAND" &&
+        (msg.payload as Record<string, unknown>).correlation_id === "unsupported-corr-1",
+      700
+    );
+
+    expect(errorResult).toBeDefined();
+
+    const metrics = await controller.getMetrics();
+    expect(metrics.device_commands_failed).toBeGreaterThanOrEqual(1);
+
+    await controller.stop();
+    await bridge.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
+  it("should publish error command_result when target device is missing", async () => {
+    const port = 19263;
+    const server = new WebSocketServer({ port });
+    const published: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridge = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (parsed.type === "publish") {
+          published.push(parsed);
+        }
+      });
+    });
+
+    await bridge.connect();
+
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store-missing-device-command"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const controller = new MatterController(config, bridge, logger);
+    await controller.start();
+
+    for (const client of server.clients) {
+      client.send(
+        JSON.stringify({
+          type: "mqtt_message",
+          topic: "homecore/devices/nonexistent_device/cmd",
+          payload: { command: "on", correlation_id: "missing-corr-1" },
+        })
+      );
+    }
+
+    const errorResult = await waitForPublishedMessage(
+      published,
+      (msg) =>
+        msg.topic === "homecore/plugins/matter/command_result" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).action === "device_command" &&
+        (msg.payload as Record<string, unknown>).status === "error" &&
+        (msg.payload as Record<string, unknown>).code === "DEVICE_NOT_FOUND" &&
+        (msg.payload as Record<string, unknown>).correlation_id === "missing-corr-1",
+      700
+    );
+
+    expect(errorResult).toBeDefined();
+
     await controller.stop();
     await bridge.disconnect();
     await new Promise<void>((resolve, reject) => {
