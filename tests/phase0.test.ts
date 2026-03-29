@@ -320,6 +320,81 @@ level = "debug"
     });
   });
 
+  it("should apply brightness commands and publish updated state", async () => {
+    const port = 19114;
+    const server = new WebSocketServer({ port });
+    const published: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridge = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (parsed.type === "publish") {
+          published.push(parsed);
+        }
+      });
+    });
+
+    await bridge.connect();
+
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store-brightness"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const controller = new MatterController(config, bridge, logger);
+    await controller.start();
+
+    for (const client of server.clients) {
+      client.send(
+        JSON.stringify({
+          type: "mqtt_message",
+          topic: "homecore/devices/matter_spike_light_1/cmd",
+          payload: { brightness_pct: 37.8, correlation_id: "test-corr-brightness" },
+        })
+      );
+    }
+
+    const statePublish = await waitForPublishedMessage(
+      published,
+      (msg) =>
+        msg.topic === "homecore/devices/matter_spike_light_1/state" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).brightness_pct === 38 &&
+        (msg.payload as Record<string, unknown>).correlation_id ===
+          "test-corr-brightness",
+      500
+    );
+
+    expect(statePublish).toBeDefined();
+
+    await controller.stop();
+    await bridge.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
   it("should publish runtime-originated OnOff callback state", async () => {
     const port = 19113;
     const server = new WebSocketServer({ port });

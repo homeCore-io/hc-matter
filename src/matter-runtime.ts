@@ -213,6 +213,37 @@ export class MatterRuntime {
     }
   }
 
+  /**
+   * Best-effort LevelControl update hook for dimmable devices.
+   * Accepts HomeCore brightness percentage (0-100).
+   */
+  async setBrightness(brightnessPct: number): Promise<void> {
+    if (!this.started || !this.lightEndpoint) {
+      return;
+    }
+
+    const clampedPct = Math.max(0, Math.min(100, brightnessPct));
+    const matterLevel = Math.round((clampedPct / 100) * 254);
+
+    try {
+      const endpoint = this.lightEndpoint as {
+        act?: (purpose: string, actor: (agent: any) => Promise<void> | void) => Promise<void>;
+      };
+
+      if (endpoint.act) {
+        await endpoint.act("set-brightness", (agent: any) => {
+          if (agent?.levelControl?.state) {
+            agent.levelControl.state.currentLevel = matterLevel;
+          }
+        });
+      }
+    } catch (error) {
+      this.logger.warn("Failed to apply brightness to matter runtime endpoint", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   async openCommissioningWindow(
     passcode: number,
     discriminator?: number

@@ -404,13 +404,23 @@ export class MatterController {
     this.logger.debug("Handling device command", { deviceId, command });
 
     // Phase 0 spike: support basic OnOff command semantics.
-    const normalized = this.normalizeOnOffCommand(command);
+    const normalized = this.normalizeLightCommand(command);
     if (normalized.on !== undefined) {
       await this.matterRuntime.setOnOff(normalized.on);
 
       await this.statePublisher.publishState(
         deviceId,
         { on: normalized.on },
+        { origin: "matter_controller", correlationId: normalized.correlationId }
+      );
+    }
+
+    if (normalized.brightnessPct !== undefined) {
+      await this.matterRuntime.setBrightness(normalized.brightnessPct);
+
+      await this.statePublisher.publishState(
+        deviceId,
+        { brightness_pct: normalized.brightnessPct },
         { origin: "matter_controller", correlationId: normalized.correlationId }
       );
     }
@@ -539,8 +549,9 @@ export class MatterController {
     };
   }
 
-  private normalizeOnOffCommand(command: Record<string, unknown>): {
+  private normalizeLightCommand(command: Record<string, unknown>): {
     on?: boolean;
+    brightnessPct?: number;
     correlationId?: string;
   } {
     const correlationId =
@@ -548,19 +559,31 @@ export class MatterController {
       (typeof command.correlationId === "string" && command.correlationId) ||
       undefined;
 
+    const normalized: {
+      on?: boolean;
+      brightnessPct?: number;
+      correlationId?: string;
+    } = { correlationId };
+
     if (typeof command.on === "boolean") {
-      return { on: command.on, correlationId };
+      normalized.on = command.on;
+    }
+
+    if (typeof command.brightness_pct === "number") {
+      normalized.brightnessPct = Math.max(0, Math.min(100, Math.round(command.brightness_pct)));
+    } else if (typeof command.brightness === "number") {
+      normalized.brightnessPct = Math.max(0, Math.min(100, Math.round(command.brightness)));
     }
 
     const raw = command.command;
     if (raw === "on") {
-      return { on: true, correlationId };
+      normalized.on = true;
     }
     if (raw === "off") {
-      return { on: false, correlationId };
+      normalized.on = false;
     }
 
-    return { correlationId };
+    return normalized;
   }
 
   private extractDeviceIdFromCmdTopic(topic: string): string | null {
