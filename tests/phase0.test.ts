@@ -485,6 +485,8 @@ level = "debug"
     expect(commandResult).toBeDefined();
     const commandPayload = (commandResult as Record<string, unknown>).payload as Record<string, unknown>;
     expect(commandPayload.pairing_code).toBeDefined();
+    expect(commandPayload.discriminator).toBe(3840);
+    expect(commandPayload.runtime_applied).toBe(false);
     expect(commandPayload.runtime).toBeDefined();
     expect(controllerState).toBeDefined();
 
@@ -818,6 +820,92 @@ level = "debug"
       expect(result).toBeDefined();
       const payload = (result as Record<string, unknown>).payload as Record<string, unknown>;
       expect(payload.runtime_applied).toBe(true);
+
+      await controller.stop();
+      await bridge.disconnect();
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve();
+          }
+        });
+      });
+    } finally {
+      if (previousSimulate === undefined) {
+        delete process.env.HC_MATTER_SIMULATE_RUNTIME;
+      } else {
+        process.env.HC_MATTER_SIMULATE_RUNTIME = previousSimulate;
+      }
+    }
+  });
+
+  it("should set runtime_applied=true for commission when runtime simulation is enabled", async () => {
+    const previousSimulate = process.env.HC_MATTER_SIMULATE_RUNTIME;
+    process.env.HC_MATTER_SIMULATE_RUNTIME = "1";
+
+    try {
+      const port = 19124;
+      const server = new WebSocketServer({ port });
+      const published: Array<Record<string, unknown>> = [];
+
+      await new Promise<void>((resolve) => {
+        server.on("listening", () => resolve());
+      });
+
+      const bridge = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+        reconnectDelayMs: 50,
+        maxReconnectAttempts: 1,
+      });
+
+      server.on("connection", (socket) => {
+        socket.on("message", (raw) => {
+          const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+          if (parsed.type === "publish") {
+            published.push(parsed);
+          }
+        });
+      });
+
+      await bridge.connect();
+
+      const logger = new Logger("test");
+      const config = {
+        storage_dir: path.join(testDir, "matter-store-controller-runtime-sim-commission"),
+        security_provider: "plaintext" as const,
+        security_key_env_var: "HC_MATTER_STORE_KEY",
+        instance_name: "TestCore",
+        passcode_default: 12345678,
+        discriminator_default: 3840,
+      };
+
+      const controller = new MatterController(config, bridge, logger);
+      await controller.start();
+
+      bridge.emit("message", {
+        type: "mqtt_message",
+        topic: "homecore/devices/matter_controller/cmd",
+        payload: { action: "commission", passcode: 12345678, discriminator: 3840, correlation_id: "sim-commission-1" },
+      });
+
+      const result = await waitForPublishedMessage(
+        published,
+        (msg) =>
+          msg.topic === "homecore/plugins/matter/command_result" &&
+          typeof msg.payload === "object" &&
+          msg.payload !== null &&
+          (msg.payload as Record<string, unknown>).action === "commission" &&
+          (msg.payload as Record<string, unknown>).status === "ok" &&
+          (msg.payload as Record<string, unknown>).correlation_id === "sim-commission-1",
+        700
+      );
+
+      expect(result).toBeDefined();
+      const payload = (result as Record<string, unknown>).payload as Record<string, unknown>;
+      expect(payload.runtime_applied).toBe(true);
+      expect(payload.discriminator).toBe(3840);
+      expect(payload.pairing_code).toBe("12345678-3840");
 
       await controller.stop();
       await bridge.disconnect();

@@ -173,13 +173,16 @@ export class MatterController {
     this.commissioningActive = true;
 
     try {
-      // TODO: Use matter.js to open commissioning window
-      // For spike, just log and return a pairing code
-      const pairingCode = this.generatePairingCode(passcode, discriminator);
+      const result = await this.matterRuntime.openCommissioningWindow(
+        passcode,
+        discriminator
+      );
+      const pairingCode = result.pairingCode;
 
       this.logger.info("Commissioning window opened", {
         pairingCode,
-        discriminator: discriminator ?? "random",
+        discriminator: result.discriminator,
+        runtime_applied: result.runtimeApplied,
       });
 
       this.lastCommissioningCode = pairingCode;
@@ -382,12 +385,15 @@ export class MatterController {
         const discriminator = parsed.discriminator ?? this.config.discriminator_default;
 
         const pairingCode = await this.commission(passcode, discriminator);
+        const runtime = this.matterRuntime.getCommissioningSnapshot();
         await this.publishCommandResult(
           action,
           "ok",
           {
             pairing_code: pairingCode,
-            runtime: this.matterRuntime.getCommissioningSnapshot(),
+            discriminator: runtime.lastDiscriminator,
+            runtime_applied: runtime.started,
+            runtime,
           },
           correlationId
         );
@@ -637,18 +643,6 @@ export class MatterController {
       runtime_device_id: info.runtimeDeviceId,
       timestamp: new Date().toISOString(),
     });
-  }
-
-  /**
-   * Generate a pairing code for commissioning
-   */
-  private generatePairingCode(
-    passcode: number,
-    discriminator?: number
-  ): string {
-    const disc = discriminator ?? Math.floor(Math.random() * 4096);
-    const code = `${passcode.toString().padStart(8, "0")}-${disc.toString().padStart(4, "0")}`;
-    return code;
   }
 
   /**

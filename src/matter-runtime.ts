@@ -21,6 +21,14 @@ export interface RuntimeCommissioningSnapshot {
   enabled: boolean;
   started: boolean;
   bootstrapDeviceId?: string;
+  lastPairingCode?: string;
+  lastDiscriminator?: number;
+}
+
+export interface RuntimeCommissioningResult {
+  pairingCode: string;
+  discriminator: number;
+  runtimeApplied: boolean;
 }
 
 type OnOffChangedHandler = (on: boolean) => Promise<void> | void;
@@ -33,6 +41,8 @@ export class MatterRuntime {
   private onOnOffChanged: OnOffChangedHandler | null = null;
   private runPromise: Promise<void> | null = null;
   private started = false;
+  private lastPairingCode: string | null = null;
+  private lastDiscriminator: number | null = null;
 
   constructor(parentLogger: Logger) {
     this.logger = parentLogger.child("matter-runtime");
@@ -47,10 +57,16 @@ export class MatterRuntime {
   }
 
   getCommissioningSnapshot(): RuntimeCommissioningSnapshot {
+    const runtimeEnabled =
+      process.env.HC_MATTER_ENABLE_RUNTIME === "1" ||
+      process.env.HC_MATTER_SIMULATE_RUNTIME === "1";
+
     return {
-      enabled: process.env.HC_MATTER_ENABLE_RUNTIME === "1",
+      enabled: runtimeEnabled,
       started: this.started,
       bootstrapDeviceId: this.bootstrapDevice?.homecoreId,
+      lastPairingCode: this.lastPairingCode ?? undefined,
+      lastDiscriminator: this.lastDiscriminator ?? undefined,
     };
   }
 
@@ -180,6 +196,87 @@ export class MatterRuntime {
     }
   }
 
+  async openCommissioningWindow(
+    passcode: number,
+    discriminator?: number
+  ): Promise<RuntimeCommissioningResult> {
+    const disc = discriminator ?? Math.floor(Math.random() * 4096);
+    const fallbackPairingCode = `${passcode.toString().padStart(8, "0")}-${disc
+      .toString()
+      .padStart(4, "0")}`;
+
+    if (process.env.HC_MATTER_SIMULATE_RUNTIME === "1") {
+      this.lastPairingCode = fallbackPairingCode;
+      this.lastDiscriminator = disc;
+      this.logger.info("Matter runtime simulation commissioning window opened", {
+        discriminator: disc,
+      });
+      return {
+        pairingCode: fallbackPairingCode,
+        discriminator: disc,
+        runtimeApplied: true,
+      };
+    }
+
+    if (!this.started || !this.node) {
+      this.lastPairingCode = fallbackPairingCode;
+      this.lastDiscriminator = disc;
+      return {
+        pairingCode: fallbackPairingCode,
+        discriminator: disc,
+        runtimeApplied: false,
+      };
+    }
+
+    try {
+      const node = this.node as {
+        openCommissioningWindow?: (opts?: {
+          passcode?: number;
+          discriminator?: number;
+        }) => Promise<Record<string, unknown>>;
+      };
+
+      if (typeof node.openCommissioningWindow === "function") {
+        const result = await node.openCommissioningWindow({
+          passcode,
+          discriminator: disc,
+        });
+
+        const pairingCode =
+          (typeof result.pairingCode === "string" && result.pairingCode) ||
+          (typeof result.manualPairingCode === "string" && result.manualPairingCode) ||
+          (typeof result.qrPairingCode === "string" && result.qrPairingCode) ||
+          fallbackPairingCode;
+
+        this.lastPairingCode = pairingCode;
+        this.lastDiscriminator = disc;
+
+        this.logger.info("Matter runtime commissioning window opened", {
+          discriminator: disc,
+          runtimeApplied: true,
+        });
+
+        return {
+          pairingCode,
+          discriminator: disc,
+          runtimeApplied: true,
+        };
+      }
+    } catch (error) {
+      this.logger.warn("Runtime commissioning attempt failed; using fallback code", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    this.lastPairingCode = fallbackPairingCode;
+    this.lastDiscriminator = disc;
+    return {
+      pairingCode: fallbackPairingCode,
+      discriminator: disc,
+      runtimeApplied: false,
+    };
+  }
+
   async stop(): Promise<void> {
     if (!this.node) {
       this.started = false;
@@ -208,6 +305,8 @@ export class MatterRuntime {
       this.bootstrapDevice = null;
       this.runPromise = null;
       this.started = false;
+      this.lastPairingCode = null;
+      this.lastDiscriminator = null;
       this.logger.info("Matter runtime stopped");
     }
   }
