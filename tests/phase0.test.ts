@@ -11,6 +11,7 @@ import { StatePublisher } from "../src/state-publisher.js";
 import { WebSocketBridge } from "../src/ws-bridge.js";
 import { MatterController } from "../src/controller/index.js";
 import { MatterBridge } from "../src/bridge/index.js";
+import { MatterRuntime } from "../src/matter-runtime.js";
 import { Logger } from "../src/logger.js";
 import * as fs from "fs";
 import * as path from "path";
@@ -175,6 +176,38 @@ level = "debug"
     expect(typeof controller.stop).toBe("function");
     expect(typeof controller.getStatus).toBe("function");
     expect(typeof controller.commission).toBe("function");
+  });
+
+  it("should expose runtime node snapshot for simulation devices", async () => {
+    const previousSimulate = process.env.HC_MATTER_SIMULATE_RUNTIME;
+    process.env.HC_MATTER_SIMULATE_RUNTIME = "1";
+
+    try {
+      const runtime = new MatterRuntime(new Logger("test"));
+      await runtime.start();
+
+      const snapshot = runtime.getNodeSnapshot("runtime-node-1");
+      expect(snapshot).toBeDefined();
+      expect(snapshot?.nodeId).toBe("runtime-node-1");
+      expect(snapshot?.endpoints).toHaveLength(3);
+      expect(snapshot?.endpoints.map((endpoint) => endpoint.homecoreId)).toContain(
+        "matter_runtime_light_1"
+      );
+      expect(snapshot?.endpoints.map((endpoint) => endpoint.homecoreId)).toContain(
+        "matter_runtime_lock_1"
+      );
+      expect(snapshot?.endpoints.map((endpoint) => endpoint.homecoreId)).toContain(
+        "matter_runtime_cover_1"
+      );
+
+      await runtime.stop();
+    } finally {
+      if (previousSimulate === undefined) {
+        delete process.env.HC_MATTER_SIMULATE_RUNTIME;
+      } else {
+        process.env.HC_MATTER_SIMULATE_RUNTIME = previousSimulate;
+      }
+    }
   });
 
   it("should generate valid pairing codes", async () => {
@@ -2499,6 +2532,193 @@ level = "debug"
         }
       });
     });
+  });
+
+  it("should return node detail payload for matter_controller node_detail action", async () => {
+    const previousSimulate = process.env.HC_MATTER_SIMULATE_RUNTIME;
+    process.env.HC_MATTER_SIMULATE_RUNTIME = "1";
+
+    try {
+      const port = 19331;
+      const server = new WebSocketServer({ port });
+      const published: Array<Record<string, unknown>> = [];
+
+      await new Promise<void>((resolve) => {
+        server.on("listening", () => resolve());
+      });
+
+      const bridge = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+        reconnectDelayMs: 50,
+        maxReconnectAttempts: 1,
+      });
+
+      server.on("connection", (socket) => {
+        socket.on("message", (raw) => {
+          const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+          if (parsed.type === "publish") {
+            published.push(parsed);
+          }
+        });
+      });
+
+      await bridge.connect();
+
+      const logger = new Logger("test");
+      const config = {
+        storage_dir: path.join(testDir, "matter-store-controller-node-detail"),
+        security_provider: "plaintext" as const,
+        security_key_env_var: "HC_MATTER_STORE_KEY",
+        instance_name: "TestCore",
+        passcode_default: 12345678,
+        discriminator_default: 3840,
+      };
+
+      const controller = new MatterController(config, bridge, logger);
+      await controller.start();
+
+      bridge.emit("message", {
+        type: "mqtt_message",
+        topic: "homecore/devices/matter_controller/cmd",
+        payload: {
+          action: "node_detail",
+          node_id: "runtime-node-1",
+          correlation_id: "node-detail-1",
+        },
+      });
+
+      const detailResult = await waitForPublishedMessage(
+        published,
+        (msg) =>
+          msg.topic === "homecore/plugins/matter/command_result" &&
+          typeof msg.payload === "object" &&
+          msg.payload !== null &&
+          (msg.payload as Record<string, unknown>).action === "node_detail" &&
+          (msg.payload as Record<string, unknown>).status === "ok",
+        700
+      );
+
+      expect(detailResult).toBeDefined();
+
+      const payload = (detailResult as Record<string, unknown>).payload as Record<string, unknown>;
+      expect(payload.correlation_id).toBe("node-detail-1");
+      const node = payload.node as Record<string, unknown>;
+      expect(node.node_id).toBe("runtime-node-1");
+      expect(node.endpoint_count).toBeGreaterThanOrEqual(1);
+
+      const endpoints = node.endpoints as Array<Record<string, unknown>>;
+      expect(Array.isArray(endpoints)).toBe(true);
+      expect(endpoints.length).toBeGreaterThanOrEqual(1);
+      expect(endpoints[0].endpoint_id).toBe(1);
+      expect(endpoints[0].cluster_count).toBeGreaterThanOrEqual(1);
+
+      await controller.stop();
+      await bridge.disconnect();
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve();
+          }
+        });
+      });
+    } finally {
+      if (previousSimulate === undefined) {
+        delete process.env.HC_MATTER_SIMULATE_RUNTIME;
+      } else {
+        process.env.HC_MATTER_SIMULATE_RUNTIME = previousSimulate;
+      }
+    }
+  });
+
+  it("should return NODE_NOT_FOUND for matter_controller node_detail action", async () => {
+    const previousSimulate = process.env.HC_MATTER_SIMULATE_RUNTIME;
+    process.env.HC_MATTER_SIMULATE_RUNTIME = "1";
+
+    try {
+      const port = 19332;
+      const server = new WebSocketServer({ port });
+      const published: Array<Record<string, unknown>> = [];
+
+      await new Promise<void>((resolve) => {
+        server.on("listening", () => resolve());
+      });
+
+      const bridge = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+        reconnectDelayMs: 50,
+        maxReconnectAttempts: 1,
+      });
+
+      server.on("connection", (socket) => {
+        socket.on("message", (raw) => {
+          const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+          if (parsed.type === "publish") {
+            published.push(parsed);
+          }
+        });
+      });
+
+      await bridge.connect();
+
+      const logger = new Logger("test");
+      const config = {
+        storage_dir: path.join(testDir, "matter-store-controller-node-detail-missing"),
+        security_provider: "plaintext" as const,
+        security_key_env_var: "HC_MATTER_STORE_KEY",
+        instance_name: "TestCore",
+        passcode_default: 12345678,
+        discriminator_default: 3840,
+      };
+
+      const controller = new MatterController(config, bridge, logger);
+      await controller.start();
+
+      bridge.emit("message", {
+        type: "mqtt_message",
+        topic: "homecore/devices/matter_controller/cmd",
+        payload: {
+          action: "node_detail",
+          node_id: "missing-node",
+          correlation_id: "node-detail-missing-1",
+        },
+      });
+
+      const detailResult = await waitForPublishedMessage(
+        published,
+        (msg) =>
+          msg.topic === "homecore/plugins/matter/command_result" &&
+          typeof msg.payload === "object" &&
+          msg.payload !== null &&
+          (msg.payload as Record<string, unknown>).action === "node_detail" &&
+          (msg.payload as Record<string, unknown>).status === "error",
+        700
+      );
+
+      expect(detailResult).toBeDefined();
+
+      const payload = (detailResult as Record<string, unknown>).payload as Record<string, unknown>;
+      expect(payload.correlation_id).toBe("node-detail-missing-1");
+      expect(payload.code).toBe("NODE_NOT_FOUND");
+      expect(payload.error).toBe("Node not found: missing-node");
+
+      await controller.stop();
+      await bridge.disconnect();
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve();
+          }
+        });
+      });
+    } finally {
+      if (previousSimulate === undefined) {
+        delete process.env.HC_MATTER_SIMULATE_RUNTIME;
+      } else {
+        process.env.HC_MATTER_SIMULATE_RUNTIME = previousSimulate;
+      }
+    }
   });
 
   it("should handle reinterview action when node exists", async () => {

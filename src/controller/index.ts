@@ -20,6 +20,7 @@ const ControllerActionSchema = z.enum([
   "remove_node",
   "status",
   "nodes",
+  "node_detail",
   "metrics",
 ]);
 
@@ -40,6 +41,13 @@ const ReinterviewPayloadSchema = z.object({
 
 const RemoveNodePayloadSchema = z.object({
   action: z.literal("remove_node"),
+  node_id: z.string().min(1),
+  correlation_id: z.string().optional(),
+  correlationId: z.string().optional(),
+});
+
+const NodeDetailPayloadSchema = z.object({
+  action: z.literal("node_detail"),
   node_id: z.string().min(1),
   correlation_id: z.string().optional(),
   correlationId: z.string().optional(),
@@ -212,6 +220,54 @@ export class MatterController {
     }));
   }
 
+  async getNodeDetail(nodeId: string): Promise<{
+    node_id: string;
+    last_seen: string;
+    endpoint_count: number;
+    endpoints: Array<{
+      endpoint_id: number;
+      cluster_count: number;
+      clusters: Array<{
+        cluster_id: number;
+        attribute_count: number;
+        attributes: Record<string, unknown>;
+      }>;
+    }>;
+  }> {
+    const node = this.fabricStore.getNode(nodeId);
+    if (!node) {
+      throw new ControllerCommandError("NODE_NOT_FOUND", `Node not found: ${nodeId}`);
+    }
+
+    const endpoints = Object.values(node.endpoints ?? {})
+      .sort((a, b) => a.id - b.id)
+      .map((endpoint) => {
+        const clusters = Object.values(endpoint.clusters ?? {})
+          .sort((a, b) => a.id - b.id)
+          .map((cluster) => {
+            const attributes = (cluster.attributes ?? {}) as Record<string, unknown>;
+            return {
+              cluster_id: cluster.id,
+              attribute_count: Object.keys(attributes).length,
+              attributes,
+            };
+          });
+
+        return {
+          endpoint_id: endpoint.id,
+          cluster_count: clusters.length,
+          clusters,
+        };
+      });
+
+    return {
+      node_id: node.nodeId,
+      last_seen: node.lastSeen,
+      endpoint_count: endpoints.length,
+      endpoints,
+    };
+  }
+
   /**
    * Get all registered devices
    */
@@ -266,10 +322,50 @@ export class MatterController {
 
     this.logger.info("Reinterviewing node", { nodeId });
 
-    // TODO: Query node endpoints and clusters from matter.js
-    // TODO: Update device registry with new/removed endpoints
-    this.fabricStore.updateNodeEndpoints(nodeId, node.endpoints);
     const runtimeApplied = await this.matterRuntime.reinterviewNode(nodeId);
+
+    const runtimeSnapshot = this.matterRuntime.getNodeSnapshot(nodeId);
+    if (runtimeSnapshot) {
+      this.deviceRegistry.removeNodeDevices(nodeId);
+
+      const runtimeEndpoints = runtimeSnapshot.endpoints.reduce<
+        Record<number, { id: number; clusters: Record<number, { id: number; attributes: Record<number, unknown> }> }>
+      >((acc, runtimeEndpoint) => {
+        const clusterMap = runtimeEndpoint.clusters.reduce<
+          Record<number, { id: number; attributes: Record<number, unknown> }>
+        >((clusters, clusterId) => {
+          clusters[clusterId] = {
+            id: clusterId,
+            attributes: {},
+          };
+          return clusters;
+        }, {});
+
+        acc[runtimeEndpoint.endpointId] = {
+          id: runtimeEndpoint.endpointId,
+          clusters: clusterMap,
+        };
+
+        this.registerDevice(nodeId, {
+          nodeId,
+          endpointId: runtimeEndpoint.endpointId,
+          matterType: runtimeEndpoint.matterType,
+          homecoreId: runtimeEndpoint.homecoreId,
+          homecoreType: runtimeEndpoint.homecoreType,
+          clusters: [...runtimeEndpoint.clusters],
+        });
+
+        return acc;
+      }, {});
+
+      this.fabricStore.updateNodeEndpoints(nodeId, runtimeEndpoints);
+    } else {
+      this.fabricStore.updateNodeEndpoints(nodeId, node.endpoints);
+    }
+
+    if (this.fabricStore.isDirty()) {
+      await this.fabricStore.save();
+    }
 
     this.logger.info("Reinterview completed", { nodeId });
     return runtimeApplied;
@@ -663,6 +759,19 @@ export class MatterController {
           "ok",
           {
             metrics,
+          },
+          correlationId
+        );
+        break;
+      }
+      case "node_detail": {
+        const parsed = NodeDetailPayloadSchema.parse(command);
+        const node = await this.getNodeDetail(parsed.node_id);
+        await this.publishCommandResult(
+          action,
+          "ok",
+          {
+            node,
           },
           correlationId
         );

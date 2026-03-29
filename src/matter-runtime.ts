@@ -37,6 +37,11 @@ export interface RuntimeSubscriptionMetrics {
   reattachFailures: number;
 }
 
+export interface RuntimeNodeSnapshot {
+  nodeId: string;
+  endpoints: RuntimeBootstrapDevice[];
+}
+
 type OnOffChangedHandler = (on: boolean) => Promise<void> | void;
 type BrightnessChangedHandler = (brightnessPct: number) => Promise<void> | void;
 
@@ -71,6 +76,22 @@ export class MatterRuntime {
 
   getBootstrapDevices(): RuntimeBootstrapDevice[] {
     return [...this.bootstrapDevices];
+  }
+
+  getNodeSnapshot(nodeId: string): RuntimeNodeSnapshot | null {
+    const endpoints = this.bootstrapDevices
+      .filter((device) => device.nodeId === nodeId)
+      .sort((a, b) => a.endpointId - b.endpointId)
+      .map((device) => ({ ...device }));
+
+    if (endpoints.length === 0) {
+      return null;
+    }
+
+    return {
+      nodeId,
+      endpoints,
+    };
   }
 
   getCommissioningSnapshot(): RuntimeCommissioningSnapshot {
