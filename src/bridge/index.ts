@@ -21,6 +21,14 @@ export interface BridgeEndpoint {
   lastUpdatedAt?: string;
 }
 
+export interface BridgeMetrics {
+  bridge_enabled: boolean;
+  bridge_started: boolean;
+  bridged_endpoints: number;
+  bridged_endpoints_with_state: number;
+  bridge_reconnect_restores: number;
+}
+
 export class MatterBridge {
   private logger: Logger;
   private controller: MatterController;
@@ -28,6 +36,7 @@ export class MatterBridge {
   private started = false;
   private handlersAttached = false;
   private endpoints: Map<string, BridgeEndpoint> = new Map();
+  private reconnectRestores = 0;
 
   private readonly onBridgeMessage = (msg: unknown) => this.handleMessage(msg);
   private readonly onBridgeConnected = () => {
@@ -110,7 +119,25 @@ export class MatterBridge {
     );
   }
 
+  getMetrics(): BridgeMetrics {
+    let endpointsWithState = 0;
+    for (const endpoint of this.endpoints.values()) {
+      if (endpoint.lastState) {
+        endpointsWithState++;
+      }
+    }
+
+    return {
+      bridge_enabled: this.config.enabled,
+      bridge_started: this.started,
+      bridged_endpoints: this.endpoints.size,
+      bridged_endpoints_with_state: endpointsWithState,
+      bridge_reconnect_restores: this.reconnectRestores,
+    };
+  }
+
   private async onReconnected(): Promise<void> {
+    this.reconnectRestores++;
     await this.wsBridge.subscribe("homecore/devices/+/state");
     await this.wsBridge.subscribe("homecore/plugins/matter/device_registered");
   }

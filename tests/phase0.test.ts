@@ -291,6 +291,13 @@ level = "debug"
     expect(endpoints).toHaveLength(1);
     expect(endpoints[0].homecoreId).toBe("matter_spike_light_1");
 
+    const preStateMetrics = matterBridge.getMetrics();
+    expect(preStateMetrics.bridge_enabled).toBe(true);
+    expect(preStateMetrics.bridge_started).toBe(true);
+    expect(preStateMetrics.bridged_endpoints).toBe(1);
+    expect(preStateMetrics.bridged_endpoints_with_state).toBe(0);
+    expect(preStateMetrics.bridge_reconnect_restores).toBeGreaterThanOrEqual(1);
+
     for (const client of server.clients) {
       client.send(
         JSON.stringify({
@@ -314,6 +321,10 @@ level = "debug"
       origin: "test",
     });
     expect(endpoints[0].lastUpdatedAt).toBeDefined();
+
+    const postStateMetrics = matterBridge.getMetrics();
+    expect(postStateMetrics.bridged_endpoints).toBe(1);
+    expect(postStateMetrics.bridged_endpoints_with_state).toBe(1);
 
     await matterBridge.stop();
     await controller.stop();

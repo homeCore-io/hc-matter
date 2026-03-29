@@ -82,9 +82,18 @@ async function main(): Promise<void> {
       return;
     }
 
-    const metrics = await controller.getMetrics();
+    const controllerMetrics = await controller.getMetrics();
+    const bridgeMetrics = bridge?.getMetrics() ?? {
+      bridge_enabled: config.bridge.enabled,
+      bridge_started: false,
+      bridged_endpoints: 0,
+      bridged_endpoints_with_state: 0,
+      bridge_reconnect_restores: 0,
+    };
+
     await wsBridge.publish("homecore/plugins/matter/metrics", {
-      ...metrics,
+      ...controllerMetrics,
+      ...bridgeMetrics,
       timestamp: new Date().toISOString(),
     });
   };
