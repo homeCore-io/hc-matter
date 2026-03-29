@@ -826,6 +826,124 @@ level = "debug"
     });
   });
 
+  it("should refresh endpoint inventory via refresh_endpoints bridge action", async () => {
+    const port = 19270;
+    const server = new WebSocketServer({ port });
+    const published: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridgeWs = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (parsed.type === "publish") {
+          published.push(parsed);
+        }
+      });
+    });
+
+    await bridgeWs.connect();
+
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store-bridge-refresh"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const controller = new MatterController(config, bridgeWs, logger);
+    await controller.start();
+
+    const matterBridge = new MatterBridge(
+      {
+        enabled: true,
+        include_ids: ["matter_spike_*"],
+        exclude_ids: [],
+      },
+      controller,
+      bridgeWs,
+      logger
+    );
+    await matterBridge.start();
+
+    // Register after bridge start so refresh action is required to ingest it.
+    controller.registerDevice("spike-node-1", {
+      nodeId: "spike-node-1",
+      endpointId: 9,
+      matterType: "OnOffLight",
+      homecoreId: "matter_spike_light_9",
+      homecoreType: "light",
+      clusters: [6],
+    });
+
+    for (const client of server.clients) {
+      client.send(
+        JSON.stringify({
+          type: "mqtt_message",
+          topic: "homecore/plugins/matter/bridge/cmd",
+          payload: {
+            action: "refresh_endpoints",
+            correlation_id: "bridge-refresh-1",
+          },
+        })
+      );
+    }
+
+    const refreshResult = await waitForPublishedMessage(
+      published,
+      (msg) =>
+        msg.topic === "homecore/plugins/matter/command_result" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).action === "refresh_endpoints" &&
+        (msg.payload as Record<string, unknown>).status === "ok" &&
+        (msg.payload as Record<string, unknown>).correlation_id === "bridge-refresh-1" &&
+        ((msg.payload as Record<string, unknown>).count as number) >= 2,
+      900
+    );
+
+    expect(refreshResult).toBeDefined();
+
+    const snapshotAfterRefresh = await waitForPublishedMessage(
+      published,
+      (msg) =>
+        msg.topic === "homecore/plugins/matter/bridge/endpoints" &&
+        typeof msg.payload === "object" &&
+        msg.payload !== null &&
+        (msg.payload as Record<string, unknown>).reason === "refresh_endpoints" &&
+        Array.isArray((msg.payload as Record<string, unknown>).endpoints) &&
+        ((msg.payload as Record<string, unknown>).endpoints as Array<Record<string, unknown>>).some(
+          (endpoint) => endpoint.homecore_id === "matter_spike_light_9"
+        ),
+      900
+    );
+
+    expect(snapshotAfterRefresh).toBeDefined();
+
+    await matterBridge.stop();
+    await controller.stop();
+    await bridgeWs.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
   it("should forward bridge command topics to HomeCore device cmd topics", async () => {
     const port = 19116;
     const server = new WebSocketServer({ port });

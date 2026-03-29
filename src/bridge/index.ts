@@ -425,6 +425,41 @@ export class MatterBridge {
       return true;
     }
 
+    if (action === "refresh_endpoints") {
+      this.refreshEndpointsFromController()
+        .then(async () => {
+          await this.publishEndpointsSnapshot("refresh_endpoints");
+          await this.publishBridgeCommandResult(
+            action,
+            "ok",
+            {
+              count: this.endpoints.size,
+            },
+            correlationId
+          );
+        })
+        .catch((error) => {
+          this.publishBridgeCommandResult(
+            action,
+            "error",
+            {
+              code: "REFRESH_ENDPOINTS_FAILED",
+              error: error instanceof Error ? error.message : String(error),
+            },
+            correlationId
+          ).catch((publishError) => {
+            this.logger.warn("Failed to publish refresh_endpoints error result", {
+              error:
+                publishError instanceof Error
+                  ? publishError.message
+                  : String(publishError),
+            });
+          });
+        });
+
+      return true;
+    }
+
     this.publishBridgeCommandResult(
       action ?? "unknown",
       "error",
