@@ -6,6 +6,7 @@ import { WebSocketBridge } from "./ws-bridge.js";
 import { MatterController } from "./controller/index.js";
 import { MatterBridge } from "./bridge/index.js";
 import { MatterRuntime } from "./matter-runtime.js";
+import { BridgeAttributeHandlers } from "./bridge/attribute-handlers.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -59,6 +60,7 @@ async function main(): Promise<void> {
   let controller: MatterController | null = null;
   let bridge: MatterBridge | null = null;
   let runtime: MatterRuntime | null = null;
+  let attributeHandlers: BridgeAttributeHandlers | null = null;
   let metricsTimer: NodeJS.Timeout | null = null;
   let componentsInitialized = false;
 
@@ -106,6 +108,13 @@ async function main(): Promise<void> {
   const gracefulShutdown = async (signal: string) => {
     logger.info(`Received ${signal}, shutting down gracefully...`);
 
+    if (attributeHandlers) {
+      try {
+        await attributeHandlers.stop();
+      } catch (error) {
+        logger.error("Error stopping attribute handlers", { error });
+      }
+    }
     if (runtime) {
       try {
         await runtime.stop();
@@ -180,6 +189,15 @@ async function main(): Promise<void> {
                   logger.info("Matter bridge wired to runtime with composed endpoints", {
                     endpoints: composedEndpoints.length,
                   });
+
+                  // Start attribute handlers for bidirectional sync after bridge is wired
+                  attributeHandlers = new BridgeAttributeHandlers({
+                    logger,
+                    wsBridge,
+                    bridgeBinding: runtime.getBridgeBinding(),
+                  });
+                  await attributeHandlers.start();
+                  logger.info("Bridge attribute handlers started");
                 }
               } catch (error) {
                 logger.warn("Failed to wire bridge endpoints to matter.js runtime", {
