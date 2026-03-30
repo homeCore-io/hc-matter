@@ -60,11 +60,14 @@ export const MATTER_CLUSTER_IDS = {
   LEVEL_CONTROL: 0x0008,
   COLOR_CONTROL: 0x0300,
   TEMPERATURE_MEASUREMENT: 0x0402,
+  ILLUMINANCE_MEASUREMENT: 0x0400,
   RELATIVE_HUMIDITY_MEASUREMENT: 0x0405,
+  PRESSURE_MEASUREMENT: 0x0403,
   OCCUPANCY_SENSING: 0x0406,
   BOOLEAN_STATE: 0x0045,
   DOOR_LOCK: 0x0101,
   WINDOW_COVERING: 0x0102,
+  ELECTRICAL_MEASUREMENT: 0x0b04,
 } as const;
 
 /**
@@ -91,6 +94,12 @@ export const MATTER_ATTRIBUTE_IDS = {
   // WindowCovering cluster
   CURRENT_POSITION_LIFT_PERCENTAGE: 0x0008,
   TARGET_POSITION_LIFT_PERCENTAGE: 0x000b,
+  // IlluminanceMeasurement cluster
+  ILLUMINANCE: 0x0000,
+  // PressureMeasurement cluster
+  PRESSURE_VALUE: 0x0000,
+  // ElectricalMeasurement cluster
+  ACTIVE_POWER: 0x050b,
 } as const;
 
 /**
@@ -358,6 +367,60 @@ export function composeDeviceClusters(
             writable: false,
             readable: true,
             homecoreAttribute: "current_position",
+          },
+        ],
+      });
+      break;
+    }
+
+    case "lux_sensor": {
+      clusters.push({
+        clusterId: MATTER_CLUSTER_IDS.ILLUMINANCE_MEASUREMENT,
+        name: "IlluminanceMeasurement",
+        attributes: [
+          {
+            attributeId: MATTER_ATTRIBUTE_IDS.ILLUMINANCE,
+            name: "measuredIlluminance",
+            type: "number",
+            writable: false,
+            readable: true,
+            homecoreAttribute: "illuminance_lux",
+          },
+        ],
+      });
+      break;
+    }
+
+    case "pressure_sensor": {
+      clusters.push({
+        clusterId: MATTER_CLUSTER_IDS.PRESSURE_MEASUREMENT,
+        name: "PressureMeasurement",
+        attributes: [
+          {
+            attributeId: MATTER_ATTRIBUTE_IDS.PRESSURE_VALUE,
+            name: "measuredPressure",
+            type: "number",
+            writable: false,
+            readable: true,
+            homecoreAttribute: "pressure_pa",
+          },
+        ],
+      });
+      break;
+    }
+
+    case "energy_sensor": {
+      clusters.push({
+        clusterId: MATTER_CLUSTER_IDS.ELECTRICAL_MEASUREMENT,
+        name: "ElectricalMeasurement",
+        attributes: [
+          {
+            attributeId: MATTER_ATTRIBUTE_IDS.ACTIVE_POWER,
+            name: "activePower",
+            type: "number",
+            writable: false,
+            readable: true,
+            homecoreAttribute: "power_w",
           },
         ],
       });

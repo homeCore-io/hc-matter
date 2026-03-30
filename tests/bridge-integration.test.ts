@@ -538,3 +538,78 @@ describe("Bridge Endpoint Exposure Integration", () => {
     });
   });
 });
+
+    it("should handle expanded sensor types (lux, pressure, energy)", () => {
+      const expandedDeviceTypes = [
+        { type: "lux_sensor", expectedClusters: 2 },      // Illuminance, Basic
+        { type: "pressure_sensor", expectedClusters: 2 }, // Pressure, Basic
+        { type: "energy_sensor", expectedClusters: 2 },   // Electrical, Basic
+      ];
+
+      expandedDeviceTypes.forEach(({ type, expectedClusters }) => {
+        const endpoint = composeEndpoint(
+          {
+            homecoreId: `device_${type}`,
+            homecoreType: type,
+            matterType: "GenericDevice",
+            nodeId: "node-1",
+            endpointId: 1,
+          },
+          logger
+        );
+
+        expect(endpoint.clusters.length).toBe(expectedClusters);
+        expect(getClusterIds(endpoint)).toContain(MATTER_CLUSTER_IDS.BASIC_INFORMATION);
+      });
+    });
+
+    it("should validate lux sensor composition", () => {
+      const endpoint = composeEndpoint(
+        {
+          homecoreId: "lux_living_room",
+          homecoreType: "lux_sensor",
+          matterType: "LightSensor",
+          nodeId: "node-1",
+          endpointId: 6,
+        },
+        logger
+      );
+
+      const clusterIds = getClusterIds(endpoint);
+      expect(clusterIds).toContain(MATTER_CLUSTER_IDS.BASIC_INFORMATION);
+      expect(clusterIds).toContain(MATTER_CLUSTER_IDS.ILLUMINANCE_MEASUREMENT);
+    });
+
+    it("should validate pressure sensor composition", () => {
+      const endpoint = composeEndpoint(
+        {
+          homecoreId: "pressure_weather",
+          homecoreType: "pressure_sensor",
+          matterType: "PressureSensor",
+          nodeId: "node-1",
+          endpointId: 7,
+        },
+        logger
+      );
+
+      const clusterIds = getClusterIds(endpoint);
+      expect(clusterIds).toContain(MATTER_CLUSTER_IDS.BASIC_INFORMATION);
+      expect(clusterIds).toContain(MATTER_CLUSTER_IDS.PRESSURE_MEASUREMENT);
+    });
+
+    it("should validate energy sensor composition", () => {
+      const endpoint = composeEndpoint(
+        {
+          homecoreId: "energy_main_panel",
+          homecoreType: "energy_sensor",
+          matterType: "PowerSensor",
+          nodeId: "node-1",
+          endpointId: 8,
+        },
+        logger
+      );
+
+      const clusterIds = getClusterIds(endpoint);
+      expect(clusterIds).toContain(MATTER_CLUSTER_IDS.BASIC_INFORMATION);
+      expect(clusterIds).toContain(MATTER_CLUSTER_IDS.ELECTRICAL_MEASUREMENT);
+    });
