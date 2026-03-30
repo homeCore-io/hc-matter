@@ -594,10 +594,16 @@ export class MatterRuntime {
     );
   }
 
+  /**
+   * Interview a runtime node for endpoint discovery.
+   * Attempts multiple matter.js API patterns and gracefully falls back if unavailable.
+   * Supports both local simulation and real matter.js runtime integration.
+   */
   private async tryInterviewNodeEndpoints(
     nodeId: string
   ): Promise<RuntimeInterviewEndpoint[] | null> {
     if (!this.node) {
+      this.logger.debug("Cannot interview node; runtime not initialized", { nodeId });
       return null;
     }
 
@@ -605,30 +611,68 @@ export class MatterRuntime {
       reinterviewNode?: (nodeId: string) => Promise<unknown>;
       interviewNode?: (nodeId: string) => Promise<unknown>;
       getNodeSnapshot?: (nodeId: string) => Promise<unknown>;
+      discoverNode?: (nodeId: string) => Promise<unknown>;
     };
 
-    const interviewResult =
-      (typeof runtimeNode.reinterviewNode === "function" &&
-        (await runtimeNode.reinterviewNode(nodeId))) ||
-      (typeof runtimeNode.interviewNode === "function" &&
-        (await runtimeNode.interviewNode(nodeId))) ||
-      (typeof runtimeNode.getNodeSnapshot === "function" &&
-        (await runtimeNode.getNodeSnapshot(nodeId))) ||
-      null;
+    let interviewResult: unknown = null;
+    let attemptedMethod: string | null = null;
+
+    // Try multiple matter.js API patterns in order of preference
+    try {
+      if (typeof runtimeNode.reinterviewNode === "function") {
+        attemptedMethod = "reinterviewNode";
+        interviewResult = await runtimeNode.reinterviewNode(nodeId);
+      } else if (typeof runtimeNode.interviewNode === "function") {
+        attemptedMethod = "interviewNode";
+        interviewResult = await runtimeNode.interviewNode(nodeId);
+      } else if (typeof runtimeNode.discoverNode === "function") {
+        attemptedMethod = "discoverNode";
+        interviewResult = await runtimeNode.discoverNode(nodeId);
+      } else if (typeof runtimeNode.getNodeSnapshot === "function") {
+        attemptedMethod = "getNodeSnapshot";
+        interviewResult = await runtimeNode.getNodeSnapshot(nodeId);
+      }
+    } catch (error) {
+      this.logger.warn("Runtime interview method threw error; gracefully degrading", {
+        nodeId,
+        attemptedMethod,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+
+    if (!attemptedMethod) {
+      this.logger.debug("No runtime interview methods available on node", { nodeId });
+      return null;
+    }
 
     if (!interviewResult || typeof interviewResult !== "object") {
+      this.logger.debug("Runtime interview result missing or not an object", {
+        nodeId,
+        method: attemptedMethod,
+        resultType: typeof interviewResult,
+      });
       return null;
     }
 
     const resultRecord = interviewResult as Record<string, unknown>;
     const rawEndpoints = resultRecord.endpoints;
     if (!Array.isArray(rawEndpoints)) {
+      this.logger.debug("Runtime interview result missing endpoints array", {
+        nodeId,
+        method: attemptedMethod,
+      });
       return null;
     }
 
     const parsed = rawEndpoints
-      .map((endpoint): RuntimeInterviewEndpoint | null => {
+      .map((endpoint, idx): RuntimeInterviewEndpoint | null => {
         if (!endpoint || typeof endpoint !== "object") {
+          this.logger.debug("Skipping malformed endpoint in interview result", {
+            nodeId,
+            index: idx,
+            type: typeof endpoint,
+          });
           return null;
         }
 
@@ -667,6 +711,14 @@ export class MatterRuntime {
           !homecoreType ||
           !matterType
         ) {
+          this.logger.debug("Skipping endpoint with missing required fields", {
+            nodeId,
+            index: idx,
+            endpointId,
+            missingHomecoreId: !homecoreId,
+            missingHomecoreType: !homecoreType,
+            missingMatterType: !matterType,
+          });
           return null;
         }
 
@@ -680,32 +732,77 @@ export class MatterRuntime {
       })
       .filter((endpoint): endpoint is RuntimeInterviewEndpoint => endpoint !== null);
 
-    return parsed;
+    this.logger.debug("Runtime interview completed successfully", {
+      nodeId,
+      method: attemptedMethod,
+      endpointCount: parsed.length,
+    });
+
+    return parsed.length > 0 ? parsed : null;
   }
 
+  /**
+   * Remove a runtime node for lifecycle cleanup.
+   * Attempts multiple matter.js API patterns and gracefully falls back if unavailable.
+   * Logs all removal attempts for debugging and audit purposes.
+   */
   private async tryRemoveNodeFromRuntime(nodeId: string): Promise<void> {
     if (!this.node) {
+      this.logger.debug("Cannot remove node; runtime not initialized", { nodeId });
       return;
     }
 
-    try {
-      const runtimeNode = this.node as {
-        removeNode?: (nodeId: string) => Promise<unknown>;
-        unpairNode?: (nodeId: string) => Promise<unknown>;
-      };
+    const runtimeNode = this.node as {
+      removeNode?: (nodeId: string) => Promise<unknown>;
+      unpairNode?: (nodeId: string) => Promise<unknown>;
+      forgetNode?: (nodeId: string) => Promise<unknown>;
+      decommissionNode?: (nodeId: string) => Promise<unknown>;
+    };
 
+    let attemptedMethod: string | null = null;
+
+    try {
+      // Try multiple matter.js API patterns in order of preference
       if (typeof runtimeNode.removeNode === "function") {
+        attemptedMethod = "removeNode";
+        this.logger.debug("Attempting removeNode on runtime", { nodeId });
         await runtimeNode.removeNode(nodeId);
+        this.logger.info("Runtime node removed successfully", { nodeId, method: attemptedMethod });
         return;
       }
 
       if (typeof runtimeNode.unpairNode === "function") {
+        attemptedMethod = "unpairNode";
+        this.logger.debug("Attempting unpairNode on runtime", { nodeId });
         await runtimeNode.unpairNode(nodeId);
+        this.logger.info("Runtime node unaired successfully", { nodeId, method: attemptedMethod });
+        return;
       }
-    } catch (error) {
-      this.logger.warn("Runtime remove node attempt failed; continuing with local cleanup", {
-        error: error instanceof Error ? error.message : String(error),
+
+      if (typeof runtimeNode.forgetNode === "function") {
+        attemptedMethod = "forgetNode";
+        this.logger.debug("Attempting forgetNode on runtime", { nodeId });
+        await runtimeNode.forgetNode(nodeId);
+        this.logger.info("Runtime node forgotten successfully", { nodeId, method: attemptedMethod });
+        return;
+      }
+
+      if (typeof runtimeNode.decommissionNode === "function") {
+        attemptedMethod = "decommissionNode";
+        this.logger.debug("Attempting decommissionNode on runtime", { nodeId });
+        await runtimeNode.decommissionNode(nodeId);
+        this.logger.info("Runtime node decommissioned successfully", { nodeId, method: attemptedMethod });
+        return;
+      }
+
+      this.logger.debug("No runtime removal methods available on node; proceeding with local cleanup only", {
         nodeId,
+      });
+    } catch (error) {
+      this.logger.warn("Runtime node removal attempt failed; proceeding with local cleanup only", {
+        nodeId,
+        attemptedMethod,
+        error: error instanceof Error ? error.message : String(error),
       });
     }
   }
