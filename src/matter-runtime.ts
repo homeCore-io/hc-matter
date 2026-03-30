@@ -7,6 +7,7 @@
  */
 
 import { Logger } from "./logger.js";
+import { MatterBridgeBinding } from "./bridge/matter-bridge-binding.js";
 
 export interface RuntimeBootstrapDevice {
   nodeId: string;
@@ -69,6 +70,7 @@ export class MatterRuntime {
   private lightEndpoint: unknown | null = null;
   private bootstrapDevices: RuntimeBootstrapDevice[] = [];
   private bridgeEndpoints: Map<string, RuntimeBridgeEndpoint> = new Map();
+  private bridgeBinding: MatterBridgeBinding;
   private onOnOffChanged: OnOffChangedHandler | null = null;
   private onBrightnessChanged: BrightnessChangedHandler | null = null;
   private runPromise: Promise<void> | null = null;
@@ -83,6 +85,7 @@ export class MatterRuntime {
 
   constructor(parentLogger: Logger) {
     this.logger = parentLogger.child("matter-runtime");
+    this.bridgeBinding = new MatterBridgeBinding(this.logger);
   }
 
   isStarted(): boolean {
@@ -257,6 +260,54 @@ export class MatterRuntime {
    */
   private clearBridgeEndpoints(): void {
     this.bridgeEndpoints.clear();
+  }
+
+  /**
+   * Create matter.js bridge with composed endpoints.
+   * Called during runtime startup to wire bridge devices into matter.js.
+   */
+  async createMatterBridge(composedEndpoints: unknown[]): Promise<void> {
+    try {
+      if (!Array.isArray(composedEndpoints) || composedEndpoints.length === 0) {
+        this.logger.debug("No composed endpoints provided for matter bridge creation");
+        return;
+      }
+
+      const bridge = await this.bridgeBinding.createBridge({
+        composedEndpoints: composedEndpoints as any,
+        logger: this.logger,
+      });
+
+      if (bridge && this.node) {
+        // If we have a real bridge and a valid ServerNode, attempt to add it
+        const node = this.node as { add?: (device: unknown) => Promise<unknown> };
+        if (typeof node.add === "function") {
+          try {
+            await node.add(bridge);
+            this.logger.info("Matter bridge added to server node");
+          } catch (error) {
+            this.logger.warn("Failed to add bridge to server node", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+      }
+
+      this.logger.debug("Matter bridge creation completed", {
+        endpoints: (composedEndpoints as any[]).length,
+      });
+    } catch (error) {
+      this.logger.warn("Error creating matter bridge during startup", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * Get access to the bridge binding for queries
+   */
+  getBridgeBinding(): MatterBridgeBinding {
+    return this.bridgeBinding;
   }
 
   /**
@@ -535,6 +586,7 @@ export class MatterRuntime {
       this.started = false;
       this.bootstrapDevices = [];
       this.clearBridgeEndpoints();
+      await this.bridgeBinding.dispose();
       return;
     }
 
@@ -558,6 +610,7 @@ export class MatterRuntime {
       this.lightEndpoint = null;
       this.bootstrapDevices = [];
       this.clearBridgeEndpoints();
+      await this.bridgeBinding.dispose();
       this.runPromise = null;
       this.started = false;
       this.lastPairingCode = null;

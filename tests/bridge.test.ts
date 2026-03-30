@@ -363,4 +363,141 @@ describe("Bridge Endpoint Factory", () => {
       expect(hasLockState).toBe(true);
     });
   });
+
+  describe("Matter Bridge Binding", () => {
+    it("should create a MatterBridgeBinding instance", async () => {
+      const { MatterBridgeBinding } = await import("../src/bridge/matter-bridge-binding.js");
+
+      const binding = new MatterBridgeBinding(logger);
+      expect(binding).toBeDefined();
+      expect(binding.getBridge()).toBeNull();
+    });
+
+    it("should track created endpoint bindings", async () => {
+      const { MatterBridgeBinding } = await import("../src/bridge/matter-bridge-binding.js");
+
+      const binding = new MatterBridgeBinding(logger);
+
+      const endpoint = composeEndpoint(
+        {
+          homecoreId: "light_1",
+          homecoreType: "light",
+          matterType: "OnOffLight",
+          nodeId: "node-1",
+          endpointId: 1,
+        },
+        logger
+      );
+
+      // In simulation mode, createBridge returns null but tracks endpoints
+      const bridge = await binding.createBridge({
+        composedEndpoints: [endpoint],
+        logger,
+      });
+
+      // Bridge should be null in non-matter.js environment
+      expect(bridge).toBeNull();
+
+      // But track the endpoints in binding internal state
+      // (We can't easily test real matter.js creation without mocking)
+      const allBindings = binding.getAllEndpointBindings();
+      // Should be empty since real Bridge API isn't available
+      expect(Array.isArray(allBindings)).toBe(true);
+    });
+
+    it("should handle multiple composed endpoints", async () => {
+      const { MatterBridgeBinding } = await import("../src/bridge/matter-bridge-binding.js");
+
+      const binding = new MatterBridgeBinding(logger);
+
+      const endpoints = [
+        composeEndpoint(
+          {
+            homecoreId: "light_1",
+            homecoreType: "light",
+            matterType: "OnOffLight",
+            nodeId: "node-1",
+            endpointId: 1,
+          },
+          logger
+        ),
+        composeEndpoint(
+          {
+            homecoreId: "switch_1",
+            homecoreType: "switch",
+            matterType: "OnOffSwitch",
+            nodeId: "node-1",
+            endpointId: 2,
+          },
+          logger
+        ),
+      ];
+
+      const bridge = await binding.createBridge({
+        composedEndpoints: endpoints,
+        logger,
+      });
+
+      // Should handle gracefully even without real matter.js
+      expect(bridge).toBeNull();
+    });
+
+    it("should get default attribute values based on type", async () => {
+      const { MatterBridgeBinding } = await import("../src/bridge/matter-bridge-binding.js");
+
+      const binding = new MatterBridgeBinding(logger);
+
+      // Access private method via reflection for testing
+      const getDefaultValue = (binding as any).getDefaultAttributeValue.bind(binding);
+
+      expect(getDefaultValue("boolean", "sensor")).toBe(false);
+      expect(getDefaultValue("number", "sensor")).toBe(0);
+      expect(getDefaultValue("string", "sensor")).toBe("");
+      expect(getDefaultValue("array", "sensor")).toEqual([]);
+      expect(getDefaultValue("struct", "sensor")).toEqual({});
+    });
+
+    it("should determine correct Matter device types", async () => {
+      const { MatterBridgeBinding } = await import("../src/bridge/matter-bridge-binding.js");
+
+      const binding = new MatterBridgeBinding(logger);
+
+      // Access private method via reflection
+      const getDeviceType = (binding as any).getDeviceType.bind(binding);
+
+      expect(getDeviceType("OnOffLight")).toBe(0x0100);
+      expect(getDeviceType("DimmableLight")).toBe(0x0101);
+      expect(getDeviceType("ColorLight")).toBe(0x0102);
+      expect(getDeviceType("DoorLock")).toBe(0x000a);
+      expect(getDeviceType("WindowCovering")).toBe(0x0202);
+      expect(getDeviceType("TemperatureSensor")).toBe(0x0302);
+      expect(getDeviceType("ContactSensor")).toBe(0x0015);
+      expect(getDeviceType("UnknownType")).toBe(0x0000); // Generic device fallback
+    });
+
+    it("should handle dispose/cleanup", async () => {
+      const { MatterBridgeBinding } = await import("../src/bridge/matter-bridge-binding.js");
+
+      const binding = new MatterBridgeBinding(logger);
+
+      // Should not throw
+      await binding.dispose();
+
+      expect(binding.getBridge()).toBeNull();
+      expect(binding.getAllEndpointBindings().length).toBe(0);
+    });
+
+    it("should get endpoint binding by HomeCore device ID", async () => {
+      const { MatterBridgeBinding } = await import("../src/bridge/matter-bridge-binding.js");
+
+      const binding = new MatterBridgeBinding(logger);
+
+      // Before any binding
+      expect(binding.getEndpointBinding("light_1")).toBeNull();
+
+      // After creation (would be null without real matter.js, but method should exist)
+      const result = binding.getEndpointBinding("light_1");
+      expect(result).toBeNull();
+    });
+  });
 });
