@@ -131,6 +131,69 @@ export class MatterRuntime {
   }
 
   /**
+   * Get all known node IDs from the runtime.
+   * Returns unique set of nodeIds from bootstrap devices.
+   */
+  getKnownNodeIds(): string[] {
+    const nodeIds = new Set(this.bootstrapDevices.map((d) => d.nodeId));
+    return Array.from(nodeIds).sort();
+  }
+
+  /**
+   * Query runtime node capabilities and properties.
+   * Attempts to fetch real matter.js node info if available.
+   */
+  async getNodeInfo(nodeId: string): Promise<Record<string, unknown> | null> {
+    if (!this.started) {
+      return null;
+    }
+
+    const snapshot = this.getNodeSnapshot(nodeId);
+    if (!snapshot) {
+      return null;
+    }
+
+    // Start with local snapshot data
+    const info: Record<string, unknown> = {
+      nodeId,
+      endpointCount: snapshot.endpoints.length,
+      endpoints: snapshot.endpoints.map((ep) => ({
+        endpointId: ep.endpointId,
+        homecoreId: ep.homecoreId,
+        homecoreType: ep.homecoreType,
+        matterType: ep.matterType,
+        clusterCount: ep.clusters.length,
+      })),
+    };
+
+    // Attempt to fetch runtime-level node info if available
+    if (this.node && typeof this.node === "object") {
+      const runtimeNode = this.node as {
+        getNodeInfo?: (nodeId: string) => Promise<unknown>;
+        nodeInfo?: Record<string, unknown>;
+      };
+
+      try {
+        if (typeof runtimeNode.getNodeInfo === "function") {
+          const runtimeInfo = await runtimeNode.getNodeInfo(nodeId);
+          if (runtimeInfo && typeof runtimeInfo === "object") {
+            info.runtimeInfo = runtimeInfo;
+          }
+        } else if (runtimeNode.nodeInfo && typeof runtimeNode.nodeInfo === "object") {
+          info.runtimeInfo = runtimeNode.nodeInfo;
+        }
+      } catch (error) {
+        this.logger.debug("Failed to fetch runtime node info", {
+          nodeId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return info;
+  }
+
+  /**
    * Start a minimal matter.js ServerNode with an OnOff light endpoint.
    * This is a concrete runtime bootstrap proving matter.js is wired in-process.
    */
