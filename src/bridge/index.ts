@@ -9,6 +9,7 @@ import { Logger } from "../logger.js";
 import { BridgeConfig } from "../config.js";
 import { WebSocketBridge } from "../ws-bridge.js";
 import { MatterController } from "../controller/index.js";
+import { composeEndpoint, ComposedEndpoint, getClusterIds } from "./endpoint-factory.js";
 
 export interface BridgeEndpoint {
   exposedEndpointId: number;
@@ -20,6 +21,8 @@ export interface BridgeEndpoint {
   clusters: number[];
   lastState?: Record<string, unknown>;
   lastUpdatedAt?: string;
+  // Composed Matter endpoint specification (for bridge registration)
+  composedEndpoint?: ComposedEndpoint;
 }
 
 export interface BridgeMetrics {
@@ -127,6 +130,27 @@ export class MatterBridge {
     );
   }
 
+  /**
+   * Get composed endpoints for Matter registration with full cluster specifications
+   */
+  async getComposedEndpoints(): Promise<ComposedEndpoint[]> {
+    const composed: ComposedEndpoint[] = [];
+    for (const endpoint of this.endpoints.values()) {
+      if (endpoint.composedEndpoint) {
+        composed.push(endpoint.composedEndpoint);
+      }
+    }
+    return composed;
+  }
+
+  /**
+   * Get a specific composed endpoint by HomeCore device ID
+   */
+  async getComposedEndpoint(homecoreId: string): Promise<ComposedEndpoint | null> {
+    const endpoint = this.endpoints.get(homecoreId);
+    return endpoint?.composedEndpoint ?? null;
+  }
+
   getMetrics(): BridgeMetrics {
     let endpointsWithState = 0;
     for (const endpoint of this.endpoints.values()) {
@@ -165,6 +189,17 @@ export class MatterBridge {
         continue;
       }
 
+      const composedEndpoint = composeEndpoint(
+        {
+          homecoreId: device.homecoreId,
+          homecoreType: device.homecoreType,
+          matterType: device.matterType,
+          nodeId: device.nodeId,
+          endpointId: device.endpointId,
+        },
+        this.logger
+      );
+
       this.endpoints.set(device.homecoreId, {
         exposedEndpointId: this.stableExposedEndpointId(device.homecoreId),
         homecoreId: device.homecoreId,
@@ -172,7 +207,8 @@ export class MatterBridge {
         matterType: device.matterType,
         nodeId: device.nodeId,
         endpointId: device.endpointId,
-        clusters: [...device.clusters],
+        clusters: getClusterIds(composedEndpoint),
+        composedEndpoint,
       });
     }
 
@@ -732,6 +768,17 @@ export class MatterBridge {
       return;
     }
 
+    const composedEndpoint = composeEndpoint(
+      {
+        homecoreId,
+        homecoreType: inferredType,
+        matterType,
+        nodeId,
+        endpointId: typeof payload.endpoint_id === "number" ? payload.endpoint_id : 0,
+      },
+      this.logger
+    );
+
     this.endpoints.set(homecoreId, {
       exposedEndpointId: this.stableExposedEndpointId(homecoreId),
       homecoreId,
@@ -739,9 +786,8 @@ export class MatterBridge {
       matterType,
       nodeId,
       endpointId: typeof payload.endpoint_id === "number" ? payload.endpoint_id : 0,
-      clusters: Array.isArray(payload.clusters)
-        ? payload.clusters.filter((item): item is number => typeof item === "number")
-        : [],
+      clusters: getClusterIds(composedEndpoint),
+      composedEndpoint,
     });
 
     this.publishEndpointsSnapshot("device_registered").catch((error) => {
