@@ -487,6 +487,18 @@ describe("Bridge Endpoint Factory", () => {
       expect(binding.getAllEndpointBindings().length).toBe(0);
     });
 
+    it("should handle dispose/cleanup", async () => {
+      const { MatterBridgeBinding } = await import("../src/bridge/matter-bridge-binding.js");
+
+      const binding = new MatterBridgeBinding(logger);
+
+      // Should not throw
+      await binding.dispose();
+
+      expect(binding.getBridge()).toBeNull();
+      expect(binding.getAllEndpointBindings().length).toBe(0);
+    });
+
     it("should get endpoint binding by HomeCore device ID", async () => {
       const { MatterBridgeBinding } = await import("../src/bridge/matter-bridge-binding.js");
 
@@ -498,6 +510,181 @@ describe("Bridge Endpoint Factory", () => {
       // After creation (would be null without real matter.js, but method should exist)
       const result = binding.getEndpointBinding("light_1");
       expect(result).toBeNull();
+    });
+  });
+
+  describe("Bridge Attribute Handlers", () => {
+    it("should create BridgeAttributeHandlers instance", async () => {
+      const { BridgeAttributeHandlers } = await import("../src/bridge/attribute-handlers.js");
+
+      const handlers = new BridgeAttributeHandlers({
+        logger,
+        wsBridge: {} as any,
+        bridgeBinding: {} as any,
+      });
+
+      expect(handlers).toBeDefined();
+    });
+
+    it("should convert brightness percentage to Matter level", async () => {
+      const { BridgeAttributeHandlers } = await import("../src/bridge/attribute-handlers.js");
+
+      const handlers = new BridgeAttributeHandlers({
+        logger,
+        wsBridge: {} as any,
+        bridgeBinding: {} as any,
+      });
+
+      // Access private method via reflection
+      const convert = (handlers as any).convertHomeCorValueToMatter.bind(handlers);
+
+      // 100% brightness → 254 (full brightness in Matter)
+      expect(convert("brightness_pct", 100, "light")).toBe(254);
+
+      // 50% brightness → 127
+      expect(convert("brightness_pct", 50, "light")).toBe(127);
+
+      // 0% brightness → 0
+      expect(convert("brightness_pct", 0, "light")).toBe(0);
+    });
+
+    it("should convert temperature Celsius to Matter 0.01°C units", async () => {
+      const { BridgeAttributeHandlers } = await import("../src/bridge/attribute-handlers.js");
+
+      const handlers = new BridgeAttributeHandlers({
+        logger,
+        wsBridge: {} as any,
+        bridgeBinding: {} as any,
+      });
+
+      const convert = (handlers as any).convertHomeCorValueToMatter.bind(handlers);
+
+      // 20°C → 2000 (0.01°C units)
+      expect(convert("temperature_c", 20, "temp_sensor")).toBe(2000);
+
+      // 25.5°C → 2550
+      expect(convert("temperature_c", 25.5, "temp_sensor")).toBe(2550);
+    });
+
+    it("should convert motion detected boolean to occupancy bitmap", async () => {
+      const { BridgeAttributeHandlers } = await import("../src/bridge/attribute-handlers.js");
+
+      const handlers = new BridgeAttributeHandlers({
+        logger,
+        wsBridge: {} as any,
+        bridgeBinding: {} as any,
+      });
+
+      const convert = (handlers as any).convertHomeCorValueToMatter.bind(handlers);
+
+      // Motion detected → occupancy bit 0 set
+      expect(convert("motion_detected", true, "motion_sensor")).toBe(1);
+
+      // No motion → occupancy bit 0 clear
+      expect(convert("motion_detected", false, "motion_sensor")).toBe(0);
+    });
+
+    it("should convert lock state boolean to Matter lock state enum", async () => {
+      const { BridgeAttributeHandlers } = await import("../src/bridge/attribute-handlers.js");
+
+      const handlers = new BridgeAttributeHandlers({
+        logger,
+        wsBridge: {} as any,
+        bridgeBinding: {} as any,
+      });
+
+      const convert = (handlers as any).convertHomeCorValueToMatter.bind(handlers);
+
+      // Locked → Matter state 1
+      expect(convert("locked", true, "lock")).toBe(1);
+
+      // Unlocked → Matter state 2
+      expect(convert("locked", false, "lock")).toBe(2);
+    });
+
+    it("should convert Matter level back to brightness percentage", async () => {
+      const { BridgeAttributeHandlers } = await import("../src/bridge/attribute-handlers.js");
+
+      const handlers = new BridgeAttributeHandlers({
+        logger,
+        wsBridge: {} as any,
+        bridgeBinding: {} as any,
+      });
+
+      const convertBack = (handlers as any).convertMatterValueToHomeCore.bind(handlers);
+
+      // Matter 254 → 100%
+      expect(convertBack("brightness_pct", 254, "light")).toBe(100);
+
+      // Matter 127 → approximately 50%
+      const result = convertBack("brightness_pct", 127, "light");
+      expect(result).toBeCloseTo(50, 0);
+
+      // Matter 0 → 0%
+      expect(convertBack("brightness_pct", 0, "light")).toBe(0);
+    });
+
+    it("should convert Matter temperature back to Celsius", async () => {
+      const { BridgeAttributeHandlers } = await import("../src/bridge/attribute-handlers.js");
+
+      const handlers = new BridgeAttributeHandlers({
+        logger,
+        wsBridge: {} as any,
+        bridgeBinding: {} as any,
+      });
+
+      const convertBack = (handlers as any).convertMatterValueToHomeCore.bind(handlers);
+
+      // Matter 2000 → 20°C
+      expect(convertBack("temperature_c", 2000, "temp_sensor")).toBe(20);
+
+      // Matter 2550 → 25.5°C
+      expect(convertBack("temperature_c", 2550, "temp_sensor")).toBe(25.5);
+    });
+
+    it("should get writable attributes for endpoint", async () => {
+      const { BridgeAttributeHandlers } = await import("../src/bridge/attribute-handlers.js");
+      const { MatterBridgeBinding } = await import("../src/bridge/matter-bridge-binding.js");
+
+      const endpoint = composeEndpoint(
+        {
+          homecoreId: "light_1",
+          homecoreType: "light",
+          matterType: "OnOffLight",
+          nodeId: "node-1",
+          endpointId: 1,
+        },
+        logger
+      );
+
+      const binding = new MatterBridgeBinding(logger);
+
+      const handlers = new BridgeAttributeHandlers({
+        logger,
+        wsBridge: {} as any,
+        bridgeBinding: binding,
+      });
+
+      // Without registered binding
+      expect(handlers.getWritableAttributes("light_1")).toEqual([]);
+    });
+
+    it("should preserve attribute type through conversions", async () => {
+      const { BridgeAttributeHandlers } = await import("../src/bridge/attribute-handlers.js");
+
+      const handlers = new BridgeAttributeHandlers({
+        logger,
+        wsBridge: {} as any,
+        bridgeBinding: {} as any,
+      });
+
+      const convert = (handlers as any).convertHomeCorValueToMatter.bind(handlers);
+
+      // Color temperature in mireds passes through
+      expect(convert("color_temperature_mireds", 370, "light")).toBe(370);
+
+      // Humidity percentage passes through
+      expect(convert("humidity_pct", 65, "humidity_sensor")).toBe(65);
     });
   });
 });
