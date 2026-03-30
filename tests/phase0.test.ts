@@ -5146,4 +5146,116 @@ level = "debug"
       });
     });
   });
+
+  it("should discover known node IDs from runtime bootstrap devices", async () => {
+    const previousSimulate = process.env.HC_MATTER_SIMULATE_RUNTIME;
+    process.env.HC_MATTER_SIMULATE_RUNTIME = "1";
+
+    try {
+      const runtime = new MatterRuntime(new Logger("test"));
+      await runtime.start();
+
+      const nodeIds = runtime.getKnownNodeIds();
+      expect(nodeIds).toContain("runtime-node-1");
+      expect(Array.isArray(nodeIds)).toBe(true);
+      expect(nodeIds.every((id) => typeof id === "string")).toBe(true);
+
+      await runtime.stop();
+    } finally {
+      if (previousSimulate === undefined) {
+        delete process.env.HC_MATTER_SIMULATE_RUNTIME;
+      } else {
+        process.env.HC_MATTER_SIMULATE_RUNTIME = previousSimulate;
+      }
+    }
+  });
+
+  it("should return empty node list when runtime is not started", () => {
+    const runtime = new MatterRuntime(new Logger("test"));
+    const nodeIds = runtime.getKnownNodeIds();
+    expect(nodeIds).toEqual([]);
+  });
+
+  it("should query node info with endpoint details", async () => {
+    const previousSimulate = process.env.HC_MATTER_SIMULATE_RUNTIME;
+    process.env.HC_MATTER_SIMULATE_RUNTIME = "1";
+
+    try {
+      const runtime = new MatterRuntime(new Logger("test"));
+      await runtime.start();
+
+      const nodeInfo = await runtime.getNodeInfo("runtime-node-1");
+      expect(nodeInfo).toBeDefined();
+      expect(nodeInfo?.nodeId).toBe("runtime-node-1");
+      expect(nodeInfo?.endpointCount).toBe(3);
+      expect(Array.isArray(nodeInfo?.endpoints)).toBe(true);
+
+      const endpoints = nodeInfo?.endpoints as Array<Record<string, unknown>>;
+      expect(endpoints.some((ep) => ep.homecoreId === "matter_runtime_light_1")).toBe(true);
+      expect(endpoints.some((ep) => ep.endpointId === 2)).toBe(true);
+      expect(endpoints[0]?.clusterCount).toBeGreaterThan(0);
+
+      await runtime.stop();
+    } finally {
+      if (previousSimulate === undefined) {
+        delete process.env.HC_MATTER_SIMULATE_RUNTIME;
+      } else {
+        process.env.HC_MATTER_SIMULATE_RUNTIME = previousSimulate;
+      }
+    }
+  });
+
+  it("should return null for node info when runtime not started", async () => {
+    const runtime = new MatterRuntime(new Logger("test"));
+    const nodeInfo = await runtime.getNodeInfo("unknown-node");
+    expect(nodeInfo).toBeNull();
+  });
+
+  it("should return null for node info when node does not exist", async () => {
+    const previousSimulate = process.env.HC_MATTER_SIMULATE_RUNTIME;
+    process.env.HC_MATTER_SIMULATE_RUNTIME = "1";
+
+    try {
+      const runtime = new MatterRuntime(new Logger("test"));
+      await runtime.start();
+
+      const nodeInfo = await runtime.getNodeInfo("non-existent-node");
+      expect(nodeInfo).toBeNull();
+
+      await runtime.stop();
+    } finally {
+      if (previousSimulate === undefined) {
+        delete process.env.HC_MATTER_SIMULATE_RUNTIME;
+      } else {
+        process.env.HC_MATTER_SIMULATE_RUNTIME = previousSimulate;
+      }
+    }
+  });
+
+  it("should accurately reflect node IDs after removal", async () => {
+    const previousSimulate = process.env.HC_MATTER_SIMULATE_RUNTIME;
+    process.env.HC_MATTER_SIMULATE_RUNTIME = "1";
+
+    try {
+      const runtime = new MatterRuntime(new Logger("test"));
+      await runtime.start();
+
+      let nodeIds = runtime.getKnownNodeIds();
+      expect(nodeIds).toContain("runtime-node-1");
+
+      await runtime.removeNode("runtime-node-1");
+
+      nodeIds = runtime.getKnownNodeIds();
+      expect(nodeIds).not.toContain("runtime-node-1");
+
+      await runtime.stop();
+    } finally {
+      if (previousSimulate === undefined) {
+        delete process.env.HC_MATTER_SIMULATE_RUNTIME;
+      } else {
+        process.env.HC_MATTER_SIMULATE_RUNTIME = previousSimulate;
+      }
+    }
+  });
 });
+
