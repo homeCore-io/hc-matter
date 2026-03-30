@@ -42,6 +42,16 @@ export interface RuntimeNodeSnapshot {
   endpoints: RuntimeBootstrapDevice[];
 }
 
+export interface RuntimeBridgeEndpoint {
+  homecoreId: string;
+  homecoreType: string;
+  matterType: string;
+  nodeId: string;
+  endpointId: number;
+  clusters: number[];
+  registeredAt?: string;
+}
+
 interface RuntimeInterviewEndpoint {
   endpointId: number;
   homecoreId: string;
@@ -58,6 +68,7 @@ export class MatterRuntime {
   private node: unknown | null = null;
   private lightEndpoint: unknown | null = null;
   private bootstrapDevices: RuntimeBootstrapDevice[] = [];
+  private bridgeEndpoints: Map<string, RuntimeBridgeEndpoint> = new Map();
   private onOnOffChanged: OnOffChangedHandler | null = null;
   private onBrightnessChanged: BrightnessChangedHandler | null = null;
   private runPromise: Promise<void> | null = null;
@@ -191,6 +202,61 @@ export class MatterRuntime {
     }
 
     return info;
+  }
+
+  /**
+   * Register a device as a bridge endpoint for external Matter controller access.
+   * Bridge endpoints are exposed via the matter.js bridge protocol.
+   */
+  async registerBridgeEndpoint(
+    homecoreId: string,
+    homecoreType: string,
+    matterType: string,
+    nodeId: string,
+    endpointId: number,
+    clusters: number[]
+  ): Promise<boolean> {
+    const bridgeEndpoint: RuntimeBridgeEndpoint = {
+      homecoreId,
+      homecoreType,
+      matterType,
+      nodeId,
+      endpointId,
+      clusters,
+      registeredAt: new Date().toISOString(),
+    };
+
+    this.bridgeEndpoints.set(homecoreId, bridgeEndpoint);
+    this.logger.debug("Bridge endpoint registered", {
+      homecoreId,
+      homecoreType,
+      matterType,
+      clusters: clusters.length,
+    });
+
+    return true;
+  }
+
+  /**
+   * Get all registered bridge endpoints.
+   */
+  getBridgeEndpoints(): RuntimeBridgeEndpoint[] {
+    return Array.from(this.bridgeEndpoints.values())
+      .sort((a, b) => a.homecoreId.localeCompare(b.homecoreId));
+  }
+
+  /**
+   * Get a specific bridge endpoint by HomeCore device ID.
+   */
+  getBridgeEndpoint(homecoreId: string): RuntimeBridgeEndpoint | null {
+    return this.bridgeEndpoints.get(homecoreId) ?? null;
+  }
+
+  /**
+   * Clear all registered bridge endpoints (typically during stop).
+   */
+  private clearBridgeEndpoints(): void {
+    this.bridgeEndpoints.clear();
   }
 
   /**
@@ -468,6 +534,7 @@ export class MatterRuntime {
     if (!this.node) {
       this.started = false;
       this.bootstrapDevices = [];
+      this.clearBridgeEndpoints();
       return;
     }
 
@@ -490,6 +557,7 @@ export class MatterRuntime {
       this.node = null;
       this.lightEndpoint = null;
       this.bootstrapDevices = [];
+      this.clearBridgeEndpoints();
       this.runPromise = null;
       this.started = false;
       this.lastPairingCode = null;
