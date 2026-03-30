@@ -5,6 +5,7 @@ import { loadConfig } from "./config.js";
 import { WebSocketBridge } from "./ws-bridge.js";
 import { MatterController } from "./controller/index.js";
 import { MatterBridge } from "./bridge/index.js";
+import { MatterRuntime } from "./matter-runtime.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -54,9 +55,10 @@ async function main(): Promise<void> {
     maxReconnectAttempts: config.homecore.max_reconnect_attempts,
   });
 
-  // Create controller and bridge (will start after WS connects)
+  // Create controller, bridge, and runtime (will start after WS connects)
   let controller: MatterController | null = null;
   let bridge: MatterBridge | null = null;
+  let runtime: MatterRuntime | null = null;
   let metricsTimer: NodeJS.Timeout | null = null;
   let componentsInitialized = false;
 
@@ -104,6 +106,13 @@ async function main(): Promise<void> {
   const gracefulShutdown = async (signal: string) => {
     logger.info(`Received ${signal}, shutting down gracefully...`);
 
+    if (runtime) {
+      try {
+        await runtime.stop();
+      } catch (error) {
+        logger.error("Error stopping runtime", { error });
+      }
+    }
     if (controller) {
       try {
         await controller.stop();
@@ -142,6 +151,10 @@ async function main(): Promise<void> {
 
     try {
       if (!componentsInitialized) {
+        // Initialize runtime first (manages matter.js ServerNode)
+        runtime = new MatterRuntime(logger);
+        await runtime.start();
+
         // Initialize controller if enabled
         if (config.controller.enabled) {
           controller = new MatterController(config.matter, wsBridge, logger);
@@ -157,6 +170,23 @@ async function main(): Promise<void> {
           } else {
             bridge = new MatterBridge(config.bridge, controller, wsBridge, logger);
             await bridge.start();
+
+            // Wire composed endpoints to matter.js bridge via runtime
+            if (runtime && runtime.isStarted()) {
+              try {
+                const composedEndpoints = await bridge.getComposedEndpoints();
+                if (composedEndpoints && composedEndpoints.length > 0) {
+                  await runtime.createMatterBridge(composedEndpoints);
+                  logger.info("Matter bridge wired to runtime with composed endpoints", {
+                    endpoints: composedEndpoints.length,
+                  });
+                }
+              } catch (error) {
+                logger.warn("Failed to wire bridge endpoints to matter.js runtime", {
+                  error: error instanceof Error ? error.message : String(error),
+                });
+              }
+            }
           }
         }
 
