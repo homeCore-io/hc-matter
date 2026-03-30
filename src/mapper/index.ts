@@ -97,22 +97,71 @@ export function getDeviceMapping(homecoreType: string): DeviceMapping | undefine
 }
 
 /**
+ * Determine if a device type is an actuator (can receive commands)
+ */
+export function isActuatorType(homecoreType: string): boolean {
+  const actuatorTypes = ["light", "dimmer_light", "switch", "lock", "cover"];
+  return actuatorTypes.includes(homecoreType);
+}
+
+/**
+ * Determine if a device type is a sensor (read-only)
+ */
+export function isSensorType(homecoreType: string): boolean {
+  const sensorTypes = ["contact_sensor", "motion_sensor", "temp_sensor", "humidity_sensor"];
+  return sensorTypes.includes(homecoreType);
+}
+
+/**
+ * Get all supported HomeCore device types
+ */
+export function getSupportedDeviceTypes(): string[] {
+  return Object.keys(DEVICE_MAPPINGS);
+}
+
+/**
+ * Get all supported actuator types
+ */
+export function getActuatorTypes(): string[] {
+  return getSupportedDeviceTypes().filter(isActuatorType);
+}
+
+/**
+ * Get all supported sensor types
+ */
+export function getSensorTypes(): string[] {
+  return getSupportedDeviceTypes().filter(isSensorType);
+}
+
+/**
  * Convert HomeCore attribute value to Matter representation
+ * Handles unit conversions and bounds checking specific to each attribute
  */
 export function toMatterValue(homecoreKey: string, value: unknown): unknown {
-  // Handle temperature: HomeCore uses Celsius, Matter uses centidegrees
-  if (homecoreKey === "temperature_c" && typeof value === "number") {
+  if (typeof value !== "number") {
+    return value;
+  }
+
+  // Handle temperature: HomeCore uses Celsius, Matter uses centidegrees (1/100 °C)
+  if (homecoreKey === "temperature_c") {
     return Math.round(value * 100);
   }
 
-  // Handle brightness: HomeCore uses percentage, Matter uses 0-254
-  if (homecoreKey === "brightness_pct" && typeof value === "number") {
-    return Math.round((value / 100) * 254);
+  // Handle brightness: HomeCore uses percentage (0-100), Matter uses 0-254
+  if (homecoreKey === "brightness_pct") {
+    const clamped = Math.max(0, Math.min(100, value));
+    return Math.round((clamped / 100) * 254);
   }
 
-  // Handle humidity: HomeCore uses percentage, Matter uses 0-10000 (in centipercent)
-  if (homecoreKey === "humidity_pct" && typeof value === "number") {
-    return Math.round(value * 100);
+  // Handle humidity: HomeCore uses percentage (0-100), Matter uses 0-10000 (in centipercent)
+  if (homecoreKey === "humidity_pct") {
+    const clamped = Math.max(0, Math.min(100, value));
+    return Math.round(clamped * 100);
+  }
+
+  // Handle position (cover/shade): HomeCore uses percentage (0-100), Matter uses 0-100
+  if (homecoreKey === "position") {
+    return Math.max(0, Math.min(100, value));
   }
 
   return value;
@@ -120,21 +169,31 @@ export function toMatterValue(homecoreKey: string, value: unknown): unknown {
 
 /**
  * Convert Matter attribute value to HomeCore representation
+ * Handles unit conversions and normalization for each attribute
  */
 export function fromMatterValue(homecoreKey: string, value: unknown): unknown {
-  // Handle temperature: Matter uses centidegrees, HomeCore uses Celsius
-  if (homecoreKey === "temperature_c" && typeof value === "number") {
-    return value / 100;
+  if (typeof value !== "number") {
+    return value;
   }
 
-  // Handle brightness: Matter uses 0-254, HomeCore uses percentage
-  if (homecoreKey === "brightness_pct" && typeof value === "number") {
+  // Handle temperature: Matter uses centidegrees, HomeCore uses Celsius
+  if (homecoreKey === "temperature_c") {
+    return Math.round((value / 100) * 10) / 10; // Round to 1 decimal place
+  }
+
+  // Handle brightness: Matter uses 0-254, HomeCore uses percentage (0-100)
+  if (homecoreKey === "brightness_pct") {
     return Math.round((value / 254) * 100);
   }
 
-  // Handle humidity: Matter uses 0-10000, HomeCore uses percentage
-  if (homecoreKey === "humidity_pct" && typeof value === "number") {
+  // Handle humidity: Matter uses 0-10000, HomeCore uses percentage (0-100)
+  if (homecoreKey === "humidity_pct") {
     return Math.round(value / 100);
+  }
+
+  // Handle position (cover/shade): both use percentage 0-100
+  if (homecoreKey === "position") {
+    return Math.max(0, Math.min(100, value));
   }
 
   return value;

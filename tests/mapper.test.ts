@@ -3,6 +3,11 @@ import {
   getDeviceMapping,
   toMatterValue,
   fromMatterValue,
+  isActuatorType,
+  isSensorType,
+  getSupportedDeviceTypes,
+  getActuatorTypes,
+  getSensorTypes,
   DEVICE_MAPPINGS,
 } from "../src/mapper/index.js";
 
@@ -53,4 +58,68 @@ describe("Mapper - Phase 1 Device Normalization", () => {
     expect(DEVICE_MAPPINGS.lock).toBeDefined();
     expect(DEVICE_MAPPINGS.cover).toBeDefined();
   });
+
+  it("should classify actuator device types correctly", () => {
+    expect(isActuatorType("light")).toBe(true);
+    expect(isActuatorType("dimmer_light")).toBe(true);
+    expect(isActuatorType("switch")).toBe(true);
+    expect(isActuatorType("lock")).toBe(true);
+    expect(isActuatorType("cover")).toBe(true);
+    expect(isActuatorType("temp_sensor")).toBe(false);
+    expect(isActuatorType("motion_sensor")).toBe(false);
+    expect(isActuatorType("unknown_type")).toBe(false);
+  });
+
+  it("should classify sensor device types correctly", () => {
+    expect(isSensorType("temp_sensor")).toBe(true);
+    expect(isSensorType("humidity_sensor")).toBe(true);
+    expect(isSensorType("contact_sensor")).toBe(true);
+    expect(isSensorType("motion_sensor")).toBe(true);
+    expect(isSensorType("light")).toBe(false);
+    expect(isSensorType("switch")).toBe(false);
+    expect(isSensorType("unknown_type")).toBe(false);
+  });
+
+  it("should list all supported device types", () => {
+    const allTypes = getSupportedDeviceTypes();
+    expect(allTypes).toContain("light");
+    expect(allTypes).toContain("temp_sensor");
+    expect(allTypes).toContain("lock");
+    expect(allTypes.length).toBe(9);
+  });
+
+  it("should list all actuator types separately", () => {
+    const actuators = getActuatorTypes();
+    expect(actuators).toEqual(["light", "dimmer_light", "switch", "lock", "cover"]);
+  });
+
+  it("should list all sensor types separately", () => {
+    const sensors = getSensorTypes();
+    expect(sensors).toEqual([
+      "contact_sensor",
+      "motion_sensor",
+      "temp_sensor",
+      "humidity_sensor",
+    ]);
+  });
+
+  it("should handle brightness bounds in conversion", () => {
+    expect(toMatterValue("brightness_pct", -10)).toBe(0);
+    expect(toMatterValue("brightness_pct", 150)).toBe(254);
+    expect(toMatterValue("brightness_pct", 50)).toBe(127);
+  });
+
+  it("should handle humidity bounds in conversion", () => {
+    expect(toMatterValue("humidity_pct", -5)).toBe(0);
+    expect(toMatterValue("humidity_pct", 120)).toBe(10000);
+    expect(toMatterValue("humidity_pct", 0)).toBe(0);
+  });
+
+  it("should handle position bounds in conversion", () => {
+    expect(toMatterValue("position", -1)).toBe(0);
+    expect(toMatterValue("position", 101)).toBe(100);
+    expect(toMatterValue("position", 75)).toBe(75);
+    expect(fromMatterValue("position", 75)).toBe(75);
+  });
 });
+
