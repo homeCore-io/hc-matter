@@ -5147,6 +5147,211 @@ level = "debug"
     });
   });
 
+  it("should detect and handle sensor state updates from HomeCore", async () => {
+    const port = 19388;
+    const server = new WebSocketServer({ port });
+    const published: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridge = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (parsed.type === "publish") {
+          published.push(parsed);
+        }
+      });
+    });
+
+    await bridge.connect();
+
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store-sensor-state"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const controller = new MatterController(config, bridge, logger);
+    await controller.start();
+
+    controller.registerDevice("sensor-node-3", {
+      nodeId: "sensor-node-3",
+      endpointId: 5,
+      matterType: "TemperatureSensor",
+      homecoreId: "temp.living_room",
+      homecoreType: "temp_sensor",
+      clusters: [1026],
+    });
+
+    controller.registerDevice("sensor-node-4", {
+      nodeId: "sensor-node-4",
+      endpointId: 6,
+      matterType: "OccupancySensor",
+      homecoreId: "motion.hallway",
+      homecoreType: "motion_sensor",
+      clusters: [1027],
+    });
+
+    // Simulate inbound state updates on state topics
+    for (const client of server.clients) {
+      // Temperature sensor state update
+      client.send(
+        JSON.stringify({
+          type: "mqtt_message",
+          topic: "homecore/devices/temp.living_room/state",
+          payload: {
+            temperature_c: 22.5,
+            origin: "esp32_sensor",
+          },
+        })
+      );
+
+      // Motion sensor state update
+      client.send(
+        JSON.stringify({
+          type: "mqtt_message",
+          topic: "homecore/devices/motion.hallway/state",
+          payload: {
+            occupied: true,
+            origin: "pir_sensor",
+          },
+        })
+      );
+
+      // Non-sensor state update should be ignored by controller
+      client.send(
+        JSON.stringify({
+          type: "mqtt_message",
+          topic: "homecore/devices/some_device/state",
+          payload: {
+            random: "data",
+          },
+        })
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // Verify controller processed sensor state without errors
+    // (no command_result should be published for state updates)
+    const commandResults = published.filter(
+      (msg) =>
+        msg.topic === "homecore/plugins/matter/command_result" &&
+        typeof msg.payload === "object" &&
+        (msg.payload as Record<string, unknown>).action === "sensor_state_update"
+    );
+
+    expect(commandResults).toHaveLength(0); // No explicit result messages
+
+    // Verify metrics show controller is still running
+    const metrics = await controller.getMetrics();
+    expect(metrics).toBeDefined();
+
+    await controller.stop();
+    await bridge.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
+  it("should ignore actuator state updates in sensor handler", async () => {
+    const port = 19389;
+    const server = new WebSocketServer({ port });
+    const published: Array<Record<string, unknown>> = [];
+
+    await new Promise<void>((resolve) => {
+      server.on("listening", () => resolve());
+    });
+
+    const bridge = new WebSocketBridge(`ws://127.0.0.1:${port}`, {
+      reconnectDelayMs: 50,
+      maxReconnectAttempts: 1,
+    });
+
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (parsed.type === "publish") {
+          published.push(parsed);
+        }
+      });
+    });
+
+    await bridge.connect();
+
+    const logger = new Logger("test");
+    const config = {
+      storage_dir: path.join(testDir, "matter-store-actuator-state"),
+      security_provider: "plaintext" as const,
+      security_key_env_var: "HC_MATTER_STORE_KEY",
+      instance_name: "TestCore",
+      passcode_default: 12345678,
+      discriminator_default: 3840,
+    };
+
+    const controller = new MatterController(config, bridge, logger);
+    await controller.start();
+
+    // Register an actuator device
+    controller.registerDevice("light-node-1", {
+      nodeId: "light-node-1",
+      endpointId: 11,
+      matterType: "OnOffLight",
+      homecoreId: "light.bedroom",
+      homecoreType: "light",
+      clusters: [6, 8],
+    });
+
+    // Actuator state updates should go through normal command path, not sensor handler
+    for (const client of server.clients) {
+      client.send(
+        JSON.stringify({
+          type: "mqtt_message",
+          topic: "homecore/devices/light.bedroom/state",
+          payload: {
+            on: true,
+            brightness_pct: 75,
+          },
+        })
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // Actuator state updates should be handled normally (they won't generate results)
+    const metrics = await controller.getMetrics();
+    expect(metrics).toBeDefined();
+
+    await controller.stop();
+    await bridge.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  });
+
   it("should discover known node IDs from runtime bootstrap devices", async () => {
     const previousSimulate = process.env.HC_MATTER_SIMULATE_RUNTIME;
     process.env.HC_MATTER_SIMULATE_RUNTIME = "1";

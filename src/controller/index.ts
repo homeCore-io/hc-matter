@@ -447,6 +447,14 @@ export class MatterController {
         return;
       }
 
+      // Check if this is a state topic update (used for sensors)
+      const stateDeviceId = this.extractDeviceIdFromStateTopic(topic);
+      if (stateDeviceId) {
+        this.handleSensorStateUpdate(stateDeviceId, payload);
+        return;
+      }
+
+      // Otherwise handle as command
       const maybeDeviceId = this.extractDeviceIdFromCmdTopic(topic);
       if (!maybeDeviceId) {
         return;
@@ -463,6 +471,13 @@ export class MatterController {
 
     // Shape C (topic/payload without explicit type)
     if (typeof message.topic === "string" && message.payload && typeof message.payload === "object") {
+      // Check state first
+      const stateDeviceId = this.extractDeviceIdFromStateTopic(message.topic);
+      if (stateDeviceId) {
+        this.handleSensorStateUpdate(stateDeviceId, message.payload as Record<string, unknown>);
+        return;
+      }
+
       const maybeDeviceId = this.extractDeviceIdFromCmdTopic(message.topic);
       if (!maybeDeviceId) {
         return;
@@ -806,6 +821,41 @@ export class MatterController {
     );
   }
 
+  /**
+   * Handle inbound sensor state update from HomeCore.
+   * Used for read-only sensor types to propagate state changes.
+   */
+  private handleSensorStateUpdate(
+    deviceId: string,
+    state: Record<string, unknown>
+  ): void {
+    const device = this.deviceRegistry.getByHomecoreId(deviceId);
+    if (!device) {
+      this.logger.debug("Sensor state update for unknown device", { deviceId });
+      return;
+    }
+
+    // Validate device is actually a sensor type
+    const sensorTypes = ["contact_sensor", "motion_sensor", "temp_sensor", "humidity_sensor"];
+    if (!sensorTypes.includes(device.homecoreType)) {
+      this.logger.debug("Non-sensor state update received", {
+        deviceId,
+        homecoreType: device.homecoreType,
+      });
+      return;
+    }
+
+    // Log sensor state changes for observability
+    this.logger.debug("Sensor state update received", {
+      deviceId,
+      homecoreType: device.homecoreType,
+      state,
+    });
+
+    // In future: propagate to Matter clusters via matter.js sensor observation
+    // For now, just track and log for test/debug purposes
+  }
+
   private async publishCommandResult(
     action: string,
     status: "ok" | "error",
@@ -935,6 +985,15 @@ export class MatterController {
   private extractDeviceIdFromCmdTopic(topic: string): string | null {
     // Expected: homecore/devices/{device_id}/cmd
     const match = topic.match(/^homecore\/devices\/([^/]+)\/cmd$/);
+    if (!match) {
+      return null;
+    }
+    return match[1];
+  }
+
+  private extractDeviceIdFromStateTopic(topic: string): string | null {
+    // Expected: homecore/devices/{device_id}/state
+    const match = topic.match(/^homecore\/devices\/([^/]+)\/state$/);
     if (!match) {
       return null;
     }
