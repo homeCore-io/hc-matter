@@ -13,9 +13,12 @@ interface DeviceState {
   [key: string]: unknown;
 }
 
+type ChangeKind = "homecore" | "physical" | "external" | "unknown";
+
 interface PublishOptions {
   origin?: string;
   correlationId?: string;
+  changeKind?: ChangeKind;
 }
 
 export class StatePublisher {
@@ -48,12 +51,28 @@ export class StatePublisher {
     // Store new state
     this.lastState.set(deviceId, JSON.parse(JSON.stringify(state)));
 
-    // Add metadata
+    const origin = options.origin || "matter_controller";
+    const changedAt = new Date().toISOString();
+    const changeKind = options.changeKind || this.defaultChangeKind(origin);
+    const existingHc =
+      typeof state._hc === "object" && state._hc !== null && !Array.isArray(state._hc)
+        ? { ...(state._hc as Record<string, unknown>) }
+        : {};
+
+    // Add HomeCore-native provenance metadata.
     const payload = {
       ...state,
-      origin: options.origin || "matter_controller",
-      correlation_id: options.correlationId,
-      timestamp: new Date().toISOString(),
+      _hc: {
+        ...existingHc,
+        change: {
+          changed_at: changedAt,
+          kind: changeKind,
+          source: origin,
+          ...(options.correlationId
+            ? { correlation_id: options.correlationId }
+            : {}),
+        },
+      },
     };
 
     // Publish to HomeCore
@@ -91,6 +110,18 @@ export class StatePublisher {
     }
 
     return true;
+  }
+
+  private defaultChangeKind(origin: string): ChangeKind {
+    switch (origin) {
+      case "matter_controller":
+        return "homecore";
+      case "matter_runtime":
+      case "matter_bridge":
+        return "external";
+      default:
+        return "external";
+    }
   }
 
   /**

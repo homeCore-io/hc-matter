@@ -12,6 +12,7 @@ import { FabricStore } from "./fabric-store.js";
 import { DeviceRegistry, MatterDevice } from "../device-registry.js";
 import { StatePublisher } from "../state-publisher.js";
 import { MatterRuntime } from "../matter-runtime.js";
+import { canonicalizeHomecoreType } from "../mapper/index.js";
 import { z } from "zod";
 
 const ControllerActionSchema = z.enum([
@@ -557,7 +558,9 @@ export class MatterController {
       let runtimeApplied = false;
       let applied = false;
 
-      if (device.homecoreType === "lock") {
+      const deviceType = canonicalizeHomecoreType(device.homecoreType);
+
+      if (deviceType === "lock") {
         const parsed = this.normalizeLockCommand(command);
         normalized = parsed;
 
@@ -573,7 +576,7 @@ export class MatterController {
           );
           applied = true;
         }
-      } else if (device.homecoreType === "cover" || device.homecoreType === "shade") {
+      } else if (deviceType === "cover") {
         const parsed = this.normalizeCoverCommand(command);
         normalized = parsed;
 
@@ -589,7 +592,7 @@ export class MatterController {
           );
           applied = true;
         }
-      } else if (device.homecoreType === "switch") {
+      } else if (deviceType === "switch") {
         const parsed = this.normalizeLightCommand(command);
         normalized = parsed;
 
@@ -603,7 +606,11 @@ export class MatterController {
           applied = true;
           runtimeApplied = this.matterRuntime.isStarted();
         }
-      } else if (device.homecoreType === "light" || device.homecoreType === "dimmer_light") {
+      } else if (
+        deviceType === "light" ||
+        deviceType === "light_color" ||
+        deviceType === "light_rgb"
+      ) {
         const parsed = this.normalizeLightCommand(command);
         normalized = parsed;
 
@@ -836,8 +843,14 @@ export class MatterController {
     }
 
     // Validate device is actually a sensor type
-    const sensorTypes = ["contact_sensor", "motion_sensor", "temp_sensor", "humidity_sensor"];
-    if (!sensorTypes.includes(device.homecoreType)) {
+    const sensorTypes = [
+      "contact_sensor",
+      "motion_sensor",
+      "occupancy_sensor",
+      "temperature_sensor",
+      "humidity_sensor",
+    ];
+    if (!sensorTypes.includes(canonicalizeHomecoreType(device.homecoreType))) {
       this.logger.debug("Non-sensor state update received", {
         deviceId,
         homecoreType: device.homecoreType,
@@ -1024,7 +1037,9 @@ export class MatterController {
       return false;
     }
 
-    const runtimeLight = runtimeDevices.find((device) => device.homecoreType === "light");
+    const runtimeLight = runtimeDevices.find(
+      (device) => canonicalizeHomecoreType(device.homecoreType) === "light"
+    );
     this.runtimeDeviceId = runtimeLight?.homecoreId ?? runtimeDevices[0].homecoreId;
 
     for (const runtimeDevice of runtimeDevices) {
@@ -1076,11 +1091,10 @@ export class MatterController {
   }
 
   private initialStateForRuntimeDevice(homecoreType: string): Record<string, unknown> {
-    switch (homecoreType) {
+    switch (canonicalizeHomecoreType(homecoreType)) {
       case "lock":
         return { locked: true };
       case "cover":
-      case "shade":
         return { position: 0 };
       default:
         return { on: false, brightness_pct: 0 };
@@ -1170,7 +1184,12 @@ export class MatterController {
       last_pairing_code: info.lastPairingCode,
       runtime_enabled: info.runtimeEnabled,
       runtime_device_id: info.runtimeDeviceId,
-      timestamp: new Date().toISOString(),
+      _hc: {
+        change: {
+          kind: "external",
+          source: "matter_controller",
+        },
+      },
     });
   }
 
