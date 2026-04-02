@@ -14,12 +14,13 @@ import { MatterBridge } from "../src/bridge/index.js";
 import { MatterRuntime } from "../src/matter-runtime.js";
 import { Logger } from "../src/logger.js";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { fileURLToPath } from "url";
 import { WebSocketServer } from "ws";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const testDir = path.join(__dirname, "..", "test_data");
+const testDir = path.join(os.tmpdir(), "hc-matter-phase0-test-data");
 
 async function waitForPublishedMessage(
   published: Array<Record<string, unknown>>,
@@ -2767,7 +2768,7 @@ level = "debug"
       endpointId: 10,
       matterType: "TemperatureSensor",
       homecoreId: "temp.virtual_1",
-      homecoreType: "temp_sensor",
+      homecoreType: "temperature_sensor",
       clusters: [1026],
     });
 
@@ -3056,7 +3057,7 @@ level = "debug"
     });
   });
 
-  it("should apply shade commands and publish updated position", async () => {
+  it("should apply cover commands and publish updated position", async () => {
     const port = 19382;
     const server = new WebSocketServer({ port });
     const published: Array<Record<string, unknown>> = [];
@@ -3083,7 +3084,7 @@ level = "debug"
 
     const logger = new Logger("test");
     const config = {
-      storage_dir: path.join(testDir, "matter-store-shade"),
+      storage_dir: path.join(testDir, "matter-store-cover-open"),
       security_provider: "plaintext" as const,
       security_key_env_var: "HC_MATTER_STORE_KEY",
       instance_name: "TestCore",
@@ -3094,12 +3095,12 @@ level = "debug"
     const controller = new MatterController(config, bridge, logger);
     await controller.start();
 
-    controller.registerDevice("shade-node-1", {
-      nodeId: "shade-node-1",
+    controller.registerDevice("cover-node-1", {
+      nodeId: "cover-node-1",
       endpointId: 1,
       matterType: "WindowCovering",
-      homecoreId: "bedroom_shade",
-      homecoreType: "shade",
+      homecoreId: "bedroom_cover",
+      homecoreType: "cover",
       clusters: [258],
     });
 
@@ -3107,8 +3108,8 @@ level = "debug"
       client.send(
         JSON.stringify({
           type: "mqtt_message",
-          topic: "homecore/devices/bedroom_shade/cmd",
-          payload: { command: "open", correlation_id: "test-corr-shade" },
+          topic: "homecore/devices/bedroom_cover/cmd",
+          payload: { command: "open", correlation_id: "test-corr-cover-open" },
         })
       );
     }
@@ -3116,11 +3117,11 @@ level = "debug"
     const statePublish = await waitForPublishedMessage(
       published,
       (msg) =>
-        msg.topic === "homecore/devices/bedroom_shade/state" &&
+        msg.topic === "homecore/devices/bedroom_cover/state" &&
         typeof msg.payload === "object" &&
         msg.payload !== null &&
         (msg.payload as Record<string, unknown>).position === 100 &&
-        (msg.payload as Record<string, unknown>).correlation_id === "test-corr-shade",
+        (msg.payload as Record<string, unknown>).correlation_id === "test-corr-cover-open",
       500
     );
 
@@ -3181,7 +3182,7 @@ level = "debug"
       nodeId: "cover-node-2",
       endpointId: 2,
       matterType: "WindowCovering",
-      homecoreId: "kitchen_shade",
+      homecoreId: "kitchen_cover",
       homecoreType: "cover",
       clusters: [258],
     });
@@ -3190,7 +3191,7 @@ level = "debug"
       client.send(
         JSON.stringify({
           type: "mqtt_message",
-          topic: "homecore/devices/kitchen_shade/cmd",
+          topic: "homecore/devices/kitchen_cover/cmd",
           payload: { position_pct: 39.6, correlation_id: "test-corr-cover-pct" },
         })
       );
@@ -3199,7 +3200,7 @@ level = "debug"
     const statePublish = await waitForPublishedMessage(
       published,
       (msg) =>
-        msg.topic === "homecore/devices/kitchen_shade/state" &&
+        msg.topic === "homecore/devices/kitchen_cover/state" &&
         typeof msg.payload === "object" &&
         msg.payload !== null &&
         (msg.payload as Record<string, unknown>).position === 40 &&
@@ -3222,7 +3223,7 @@ level = "debug"
     });
   });
 
-  it("should accept position_pct commands for shade devices", async () => {
+  it("should accept position_pct commands for cover alias devices", async () => {
     const port = 19387;
     const server = new WebSocketServer({ port });
     const published: Array<Record<string, unknown>> = [];
@@ -3249,7 +3250,7 @@ level = "debug"
 
     const logger = new Logger("test");
     const config = {
-      storage_dir: path.join(testDir, "matter-store-shade-position-pct"),
+      storage_dir: path.join(testDir, "matter-store-cover-alias-position-pct"),
       security_provider: "plaintext" as const,
       security_key_env_var: "HC_MATTER_STORE_KEY",
       instance_name: "TestCore",
@@ -3260,8 +3261,8 @@ level = "debug"
     const controller = new MatterController(config, bridge, logger);
     await controller.start();
 
-    controller.registerDevice("shade-node-3", {
-      nodeId: "shade-node-3",
+    controller.registerDevice("cover-alias-node-3", {
+      nodeId: "cover-alias-node-3",
       endpointId: 3,
       matterType: "WindowCovering",
       homecoreId: "office_shade",
@@ -3370,7 +3371,7 @@ level = "debug"
     });
   });
 
-  it("should forward shade bridge commands to HomeCore device cmd topics", async () => {
+  it("should forward cover bridge commands to HomeCore device cmd topics", async () => {
     const port = 19383;
     const server = new WebSocketServer({ port });
     const published: Array<Record<string, unknown>> = [];
@@ -3397,7 +3398,7 @@ level = "debug"
 
     const logger = new Logger("test");
     const config = {
-      storage_dir: path.join(testDir, "matter-store-bridge-shade-cmd"),
+      storage_dir: path.join(testDir, "matter-store-bridge-cover-cmd"),
       security_provider: "plaintext" as const,
       security_key_env_var: "HC_MATTER_STORE_KEY",
       instance_name: "TestCore",
@@ -3407,19 +3408,19 @@ level = "debug"
 
     const controller = new MatterController(config, bridgeWs, logger);
     await controller.start();
-    controller.registerDevice("shade-node-2", {
-      nodeId: "shade-node-2",
+    controller.registerDevice("cover-node-2", {
+      nodeId: "cover-node-2",
       endpointId: 4,
       matterType: "WindowCovering",
-      homecoreId: "shade.virtual_1",
-      homecoreType: "shade",
+      homecoreId: "cover.virtual_1",
+      homecoreType: "cover",
       clusters: [258],
     });
 
     const matterBridge = new MatterBridge(
       {
         enabled: true,
-        include_ids: ["shade.*"],
+        include_ids: ["cover.*"],
         exclude_ids: [],
       },
       controller,
@@ -3435,9 +3436,9 @@ level = "debug"
           topic: "homecore/plugins/matter/bridge/cmd",
           payload: {
             action: "set_position",
-            homecore_id: "shade.virtual_1",
+            homecore_id: "cover.virtual_1",
             value: 22,
-            correlation_id: "bridge-shade-1",
+            correlation_id: "bridge-cover-1",
           },
         })
       );
@@ -3446,12 +3447,12 @@ level = "debug"
     const forwarded = await waitForPublishedMessage(
       published,
       (msg) =>
-        msg.topic === "homecore/devices/shade.virtual_1/cmd" &&
+        msg.topic === "homecore/devices/cover.virtual_1/cmd" &&
         typeof msg.payload === "object" &&
         msg.payload !== null &&
         (msg.payload as Record<string, unknown>).position === 22 &&
         (msg.payload as Record<string, unknown>).origin === "matter_bridge" &&
-        (msg.payload as Record<string, unknown>).correlation_id === "bridge-shade-1",
+        (msg.payload as Record<string, unknown>).correlation_id === "bridge-cover-1",
       700
     );
 
@@ -5190,7 +5191,7 @@ level = "debug"
       endpointId: 5,
       matterType: "TemperatureSensor",
       homecoreId: "temp.living_room",
-      homecoreType: "temp_sensor",
+      homecoreType: "temperature_sensor",
       clusters: [1026],
     });
 
@@ -5211,7 +5212,7 @@ level = "debug"
           type: "mqtt_message",
           topic: "homecore/devices/temp.living_room/state",
           payload: {
-            temperature_c: 22.5,
+            temperature: 22.5,
             origin: "esp32_sensor",
           },
         })
@@ -5463,4 +5464,3 @@ level = "debug"
     }
   });
 });
-

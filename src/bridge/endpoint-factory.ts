@@ -6,6 +6,7 @@
  */
 
 import { Logger } from "../logger.js";
+import { canonicalizeHomecoreType } from "../mapper/index.js";
 
 /**
  * Represents a Matter cluster specification with supported attributes.
@@ -110,6 +111,7 @@ export function composeDeviceClusters(
   homecoreType: string,
   logger: Logger
 ): ClusterSpec[] {
+  const canonicalType = canonicalizeHomecoreType(homecoreType);
   const clusters: ClusterSpec[] = [];
 
   // All endpoints include basic information cluster
@@ -156,8 +158,43 @@ export function composeDeviceClusters(
   });
 
   // Device-type specific clusters
-  switch (homecoreType) {
+  switch (canonicalType) {
     case "light": {
+      clusters.push({
+        clusterId: MATTER_CLUSTER_IDS.ON_OFF,
+        name: "OnOff",
+        attributes: [
+          {
+            attributeId: MATTER_ATTRIBUTE_IDS.ON_OFF,
+            name: "onOff",
+            type: "boolean",
+            writable: true,
+            readable: true,
+            homecoreAttribute: "on",
+          },
+        ],
+      });
+
+      clusters.push({
+        clusterId: MATTER_CLUSTER_IDS.LEVEL_CONTROL,
+        name: "LevelControl",
+        attributes: [
+          {
+            attributeId: MATTER_ATTRIBUTE_IDS.CURRENT_LEVEL,
+            name: "currentLevel",
+            type: "number",
+            writable: true,
+            readable: true,
+            homecoreAttribute: "brightness_pct",
+          },
+        ],
+      });
+
+      break;
+    }
+
+    case "light_color":
+    case "light_rgb": {
       clusters.push({
         clusterId: MATTER_CLUSTER_IDS.ON_OFF,
         name: "OnOff",
@@ -198,40 +235,7 @@ export function composeDeviceClusters(
             type: "number",
             writable: true,
             readable: true,
-            homecoreAttribute: "color_temperature_mireds",
-          },
-        ],
-      });
-      break;
-    }
-
-    case "dimmer_light": {
-      clusters.push({
-        clusterId: MATTER_CLUSTER_IDS.ON_OFF,
-        name: "OnOff",
-        attributes: [
-          {
-            attributeId: MATTER_ATTRIBUTE_IDS.ON_OFF,
-            name: "onOff",
-            type: "boolean",
-            writable: true,
-            readable: true,
-            homecoreAttribute: "on",
-          },
-        ],
-      });
-
-      clusters.push({
-        clusterId: MATTER_CLUSTER_IDS.LEVEL_CONTROL,
-        name: "LevelControl",
-        attributes: [
-          {
-            attributeId: MATTER_ATTRIBUTE_IDS.CURRENT_LEVEL,
-            name: "currentLevel",
-            type: "number",
-            writable: true,
-            readable: true,
-            homecoreAttribute: "brightness_pct",
+            homecoreAttribute: "color_temp",
           },
         ],
       });
@@ -267,7 +271,7 @@ export function composeDeviceClusters(
             type: "boolean",
             writable: false,
             readable: true,
-            homecoreAttribute: "open",
+            homecoreAttribute: "contact",
           },
         ],
       });
@@ -285,14 +289,32 @@ export function composeDeviceClusters(
             type: "bitmap",
             writable: false,
             readable: true,
-            homecoreAttribute: "motion_detected",
+            homecoreAttribute: "motion",
           },
         ],
       });
       break;
     }
 
-    case "temp_sensor": {
+    case "occupancy_sensor": {
+      clusters.push({
+        clusterId: MATTER_CLUSTER_IDS.OCCUPANCY_SENSING,
+        name: "OccupancySensing",
+        attributes: [
+          {
+            attributeId: MATTER_ATTRIBUTE_IDS.OCCUPANCY,
+            name: "occupancy",
+            type: "bitmap",
+            writable: false,
+            readable: true,
+            homecoreAttribute: "occupied",
+          },
+        ],
+      });
+      break;
+    }
+
+    case "temperature_sensor": {
       clusters.push({
         clusterId: MATTER_CLUSTER_IDS.TEMPERATURE_MEASUREMENT,
         name: "TemperatureMeasurement",
@@ -303,7 +325,7 @@ export function composeDeviceClusters(
             type: "number",
             writable: false,
             readable: true,
-            homecoreAttribute: "temperature_c",
+            homecoreAttribute: "temperature",
           },
         ],
       });
@@ -346,8 +368,7 @@ export function composeDeviceClusters(
       break;
     }
 
-    case "cover":
-    case "shade": {
+    case "cover": {
       clusters.push({
         clusterId: MATTER_CLUSTER_IDS.WINDOW_COVERING,
         name: "WindowCovering",
@@ -358,7 +379,7 @@ export function composeDeviceClusters(
             type: "number",
             writable: true,
             readable: true,
-            homecoreAttribute: "target_position",
+            homecoreAttribute: "position",
           },
           {
             attributeId: MATTER_ATTRIBUTE_IDS.CURRENT_POSITION_LIFT_PERCENTAGE,
@@ -366,7 +387,7 @@ export function composeDeviceClusters(
             type: "number",
             writable: false,
             readable: true,
-            homecoreAttribute: "current_position",
+            homecoreAttribute: "position",
           },
         ],
       });
@@ -429,7 +450,7 @@ export function composeDeviceClusters(
 
     default: {
       logger.warn("Unknown HomeCore device type for cluster composition", {
-        homecoreType,
+        homecoreType: canonicalType,
       });
       break;
     }
@@ -449,7 +470,7 @@ export function composeEndpoint(
 
   return {
     homecoreId: config.homecoreId,
-    homecoreType: config.homecoreType,
+    homecoreType: canonicalizeHomecoreType(config.homecoreType),
     matterType: config.matterType,
     clusters,
     additionalMetadata: {

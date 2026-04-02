@@ -86,7 +86,7 @@ describe("Bridge Endpoint Exposure Integration", () => {
   });
 
   describe("Endpoint Composition and Registration", () => {
-    it("should compose light endpoint with all required clusters", () => {
+    it("should compose light endpoint with the canonical dimmable cluster set", () => {
       const endpoint = composeEndpoint(
         {
           homecoreId: "light_kitchen",
@@ -99,13 +99,13 @@ describe("Bridge Endpoint Exposure Integration", () => {
       );
 
       expect(endpoint.homecoreId).toBe("light_kitchen");
-      expect(endpoint.clusters.length).toBeGreaterThanOrEqual(4);
+      expect(endpoint.clusters.length).toBeGreaterThanOrEqual(3);
 
       const clusterIds = getClusterIds(endpoint);
       expect(clusterIds).toContain(MATTER_CLUSTER_IDS.BASIC_INFORMATION);
       expect(clusterIds).toContain(MATTER_CLUSTER_IDS.ON_OFF);
       expect(clusterIds).toContain(MATTER_CLUSTER_IDS.LEVEL_CONTROL);
-      expect(clusterIds).toContain(MATTER_CLUSTER_IDS.COLOR_CONTROL);
+      expect(clusterIds).not.toContain(MATTER_CLUSTER_IDS.COLOR_CONTROL);
     });
 
     it("should compose multiple endpoint types correctly", () => {
@@ -203,10 +203,10 @@ describe("Bridge Endpoint Exposure Integration", () => {
       const convert = handlers.convertHomeCorValueToMatter.bind(handlers);
 
       // 20°C → 2000 (0.01°C units)
-      expect(convert("temperature_c", 20, "temp_sensor")).toBe(2000);
+      expect(convert("temperature", 20, "temperature_sensor")).toBe(2000);
 
       // 25.5°C → 2550
-      expect(convert("temperature_c", 25.5, "temp_sensor")).toBe(2550);
+      expect(convert("temperature", 25.5, "temperature_sensor")).toBe(2550);
     });
 
     it("should handle humidity state update preservation", async () => {
@@ -236,10 +236,10 @@ describe("Bridge Endpoint Exposure Integration", () => {
       const convert = handlers.convertHomeCorValueToMatter.bind(handlers);
 
       // Motion detected true → occupancy bit 0 set (1)
-      expect(convert("motion_detected", true, "motion_sensor")).toBe(1);
+      expect(convert("motion", true, "motion_sensor")).toBe(1);
 
       // Motion detected false → occupancy bit 0 clear (0)
-      expect(convert("motion_detected", false, "motion_sensor")).toBe(0);
+      expect(convert("motion", false, "motion_sensor")).toBe(0);
     });
   });
 
@@ -268,10 +268,10 @@ describe("Bridge Endpoint Exposure Integration", () => {
       const convertBack = handlers.convertMatterValueToHomeCore.bind(handlers);
 
       // Matter 2000 → 20°C
-      expect(convertBack("temperature_c", 2000, "temp_sensor")).toBe(20);
+      expect(convertBack("temperature", 2000, "temperature_sensor")).toBe(20);
 
       // Matter 2550 → 25.5°C
-      expect(convertBack("temperature_c", 2550, "temp_sensor")).toBe(25.5);
+      expect(convertBack("temperature", 2550, "temperature_sensor")).toBe(25.5);
     });
 
     it("should convert Matter lock state to HomeCore boolean", async () => {
@@ -290,14 +290,14 @@ describe("Bridge Endpoint Exposure Integration", () => {
       const convertBack = handlers.convertMatterValueToHomeCore.bind(handlers);
 
       // Occupancy bitmap bit 0 set → motion detected true
-      expect(convertBack("motion_detected", 1, "motion_sensor")).toBe(true);
+      expect(convertBack("motion", 1, "motion_sensor")).toBe(true);
 
       // Occupancy bitmap bit 0 clear → motion detected false
-      expect(convertBack("motion_detected", 0, "motion_sensor")).toBe(false);
+      expect(convertBack("motion", 0, "motion_sensor")).toBe(false);
 
       // Higher bits don't affect motion detection
-      expect(convertBack("motion_detected", 3, "motion_sensor")).toBe(true); // 0b11 has bit 0 set
-      expect(convertBack("motion_detected", 2, "motion_sensor")).toBe(false); // 0b10 doesn't have bit 0
+      expect(convertBack("motion", 3, "motion_sensor")).toBe(true); // 0b11 has bit 0 set
+      expect(convertBack("motion", 2, "motion_sensor")).toBe(false); // 0b10 doesn't have bit 0
     });
   });
 
@@ -327,8 +327,8 @@ describe("Bridge Endpoint Exposure Integration", () => {
     it("should compose sensor endpoint with measurement cluster", () => {
       const endpoint = composeEndpoint(
         {
-          homecoreId: "temp_outdoor",
-          homecoreType: "temp_sensor",
+          homecoreId: "temperature_outdoor",
+          homecoreType: "temperature_sensor",
           matterType: "TemperatureSensor",
           nodeId: "node-1",
           endpointId: 3,
@@ -387,11 +387,11 @@ describe("Bridge Endpoint Exposure Integration", () => {
     it("should create complete device typeset for Matter bridge", () => {
       const deviceTypes = [
         "light",
-        "dimmer_light",
+        "light_color",
         "switch",
         "contact_sensor",
         "motion_sensor",
-        "temp_sensor",
+        "temperature_sensor",
         "humidity_sensor",
         "lock",
         "cover",
@@ -421,7 +421,7 @@ describe("Bridge Endpoint Exposure Integration", () => {
       expect(lightClusters).toContain(MATTER_CLUSTER_IDS.ON_OFF);
       expect(lightClusters).toContain(MATTER_CLUSTER_IDS.LEVEL_CONTROL);
 
-      const tempClusters = getClusterIds(endpoints[5]); // temp_sensor
+      const tempClusters = getClusterIds(endpoints[5]); // temperature_sensor
       expect(tempClusters).toContain(MATTER_CLUSTER_IDS.TEMPERATURE_MEASUREMENT);
       expect(tempClusters).not.toContain(MATTER_CLUSTER_IDS.ON_OFF);
     });
@@ -450,8 +450,8 @@ describe("Bridge Endpoint Exposure Integration", () => {
     it("should identify no writable attributes for sensor", () => {
       const endpoint = composeEndpoint(
         {
-          homecoreId: "temp_1",
-          homecoreType: "temp_sensor",
+          homecoreId: "temperature_1",
+          homecoreType: "temperature_sensor",
           matterType: "TemperatureSensor",
           nodeId: "node-1",
           endpointId: 3,
@@ -506,14 +506,17 @@ describe("Bridge Endpoint Exposure Integration", () => {
   });
 
   describe("Complete Device Category Coverage", () => {
-    it("should handle all 10 supported HomeCore device types", () => {
+    it("should handle the canonical and alias-supported HomeCore device types", () => {
       const deviceTypes = [
-        { type: "light", expectedClusters: 4 },          // OnOff, Level, Color, Basic
-        { type: "dimmer_light", expectedClusters: 3 },   // OnOff, Level, Basic
+        { type: "light", expectedClusters: 3 },          // OnOff, Level, Basic
+        { type: "light_color", expectedClusters: 4 },    // OnOff, Level, Color, Basic
+        { type: "dimmer_light", expectedClusters: 3 },   // Alias to canonical light
         { type: "switch", expectedClusters: 2 },         // OnOff, Basic
         { type: "contact_sensor", expectedClusters: 2 }, // Boolean, Basic
         { type: "motion_sensor", expectedClusters: 2 },  // Occupancy, Basic
-        { type: "temp_sensor", expectedClusters: 2 },    // Temperature, Basic
+        { type: "occupancy_sensor", expectedClusters: 2 }, // Occupancy, Basic
+        { type: "temperature_sensor", expectedClusters: 2 }, // Temperature, Basic
+        { type: "temp_sensor", expectedClusters: 2 },    // Alias to canonical temperature_sensor
         { type: "humidity_sensor", expectedClusters: 2 }, // Humidity, Basic
         { type: "lock", expectedClusters: 2 },           // DoorLock, Basic
         { type: "cover", expectedClusters: 2 },          // WindowCovering, Basic

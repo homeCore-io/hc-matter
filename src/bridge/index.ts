@@ -10,6 +10,7 @@ import { BridgeConfig } from "../config.js";
 import { WebSocketBridge } from "../ws-bridge.js";
 import { MatterController } from "../controller/index.js";
 import { composeEndpoint, ComposedEndpoint, getClusterIds } from "./endpoint-factory.js";
+import { canonicalizeHomecoreType } from "../mapper/index.js";
 
 export interface BridgeEndpoint {
   exposedEndpointId: number;
@@ -185,14 +186,15 @@ export class MatterBridge {
     this.endpoints.clear();
 
     for (const device of devices) {
-      if (!this.isIncluded(device.homecoreId, device.homecoreType)) {
+      const homecoreType = canonicalizeHomecoreType(device.homecoreType);
+      if (!this.isIncluded(device.homecoreId, homecoreType)) {
         continue;
       }
 
       const composedEndpoint = composeEndpoint(
         {
           homecoreId: device.homecoreId,
-          homecoreType: device.homecoreType,
+          homecoreType,
           matterType: device.matterType,
           nodeId: device.nodeId,
           endpointId: device.endpointId,
@@ -203,7 +205,7 @@ export class MatterBridge {
       this.endpoints.set(device.homecoreId, {
         exposedEndpointId: this.stableExposedEndpointId(device.homecoreId),
         homecoreId: device.homecoreId,
-        homecoreType: device.homecoreType,
+        homecoreType,
         matterType: device.matterType,
         nodeId: device.nodeId,
         endpointId: device.endpointId,
@@ -218,6 +220,7 @@ export class MatterBridge {
   }
 
   private isIncluded(homecoreId: string, homecoreType: string): boolean {
+    const canonicalType = canonicalizeHomecoreType(homecoreType);
     const includeIds = this.config.include_ids.length > 0 ? this.config.include_ids : ["*"];
     const included = includeIds.some((pattern) => this.globMatch(pattern, homecoreId));
     if (!included) {
@@ -231,7 +234,9 @@ export class MatterBridge {
     if (
       this.config.device_type_filter &&
       this.config.device_type_filter.length > 0 &&
-      !this.config.device_type_filter.includes(homecoreType)
+      !this.config.device_type_filter
+        .map((value) => canonicalizeHomecoreType(value))
+        .includes(canonicalType)
     ) {
       return false;
     }
@@ -689,9 +694,10 @@ export class MatterBridge {
       return commandRecord;
     }
 
-    switch (endpoint.homecoreType) {
+    switch (canonicalizeHomecoreType(endpoint.homecoreType)) {
       case "light":
-      case "dimmer_light": {
+      case "light_color":
+      case "light_rgb": {
         if (action === "on" || action === "off") {
           return withCorrelation({ command: action });
         }
@@ -730,8 +736,7 @@ export class MatterBridge {
 
         return null;
       }
-      case "cover":
-      case "shade": {
+      case "cover": {
         if (action === "open" || action === "close") {
           return withCorrelation({ command: action });
         }
@@ -763,7 +768,7 @@ export class MatterBridge {
       return;
     }
 
-    const inferredType = this.inferHomecoreType(homecoreId);
+    const inferredType = canonicalizeHomecoreType(this.inferHomecoreType(homecoreId));
     if (!this.isIncluded(homecoreId, inferredType)) {
       return;
     }

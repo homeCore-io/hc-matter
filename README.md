@@ -145,12 +145,13 @@ GET    /api/v1/plugins/matter/metrics        # Runtime metrics
 
 | HomeCore Type   | Matter Device    | Clusters               |
 |-----------------|------------------|------------------------|
-| light           | ExtendedColorLight | OnOff, LevelControl, ColorControl |
-| dimmer_light    | DimmableLight    | OnOff, LevelControl    |
+| light           | DimmableLight    | OnOff, LevelControl    |
+| light_color     | ExtendedColorLight | OnOff, LevelControl, ColorControl |
 | switch          | OnOffSwitch      | OnOff, Scenes          |
 | contact_sensor  | ContactSensor    | BooleanState           |
 | motion_sensor   | OccupancySensor  | Occupancy, BooleanState |
-| temp_sensor     | TemperatureSensor | TemperatureMeasurement |
+| occupancy_sensor | OccupancySensor | Occupancy              |
+| temperature_sensor | TemperatureSensor | TemperatureMeasurement |
 
 ## Development
 

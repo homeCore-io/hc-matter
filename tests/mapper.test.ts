@@ -9,17 +9,18 @@ import {
   getActuatorTypes,
   getSensorTypes,
   DEVICE_MAPPINGS,
+  canonicalizeHomecoreType,
 } from "../src/mapper/index.js";
 
 describe("Mapper - Phase 1 Device Normalization", () => {
   it("should provide mappings for initial Phase 1 device set", () => {
     const requiredTypes = [
       "light",
-      "dimmer_light",
+      "light_color",
       "switch",
       "contact_sensor",
       "motion_sensor",
-      "temp_sensor",
+      "temperature_sensor",
     ];
 
     for (const type of requiredTypes) {
@@ -33,8 +34,8 @@ describe("Mapper - Phase 1 Device Normalization", () => {
   });
 
   it("should convert temperature between HomeCore and Matter units", () => {
-    expect(toMatterValue("temperature_c", 21.5)).toBe(2150);
-    expect(fromMatterValue("temperature_c", 2150)).toBe(21.5);
+    expect(toMatterValue("temperature", 21.5)).toBe(2150);
+    expect(fromMatterValue("temperature", 2150)).toBe(21.5);
   });
 
   it("should convert brightness between percentage and Matter level", () => {
@@ -57,24 +58,26 @@ describe("Mapper - Phase 1 Device Normalization", () => {
     expect(DEVICE_MAPPINGS.humidity_sensor).toBeDefined();
     expect(DEVICE_MAPPINGS.lock).toBeDefined();
     expect(DEVICE_MAPPINGS.cover).toBeDefined();
+    expect(DEVICE_MAPPINGS.occupancy_sensor).toBeDefined();
   });
 
   it("should classify actuator device types correctly", () => {
     expect(isActuatorType("light")).toBe(true);
-    expect(isActuatorType("dimmer_light")).toBe(true);
+    expect(isActuatorType("light_color")).toBe(true);
     expect(isActuatorType("switch")).toBe(true);
     expect(isActuatorType("lock")).toBe(true);
     expect(isActuatorType("cover")).toBe(true);
-    expect(isActuatorType("temp_sensor")).toBe(false);
+    expect(isActuatorType("temperature_sensor")).toBe(false);
     expect(isActuatorType("motion_sensor")).toBe(false);
     expect(isActuatorType("unknown_type")).toBe(false);
   });
 
   it("should classify sensor device types correctly", () => {
-    expect(isSensorType("temp_sensor")).toBe(true);
+    expect(isSensorType("temperature_sensor")).toBe(true);
     expect(isSensorType("humidity_sensor")).toBe(true);
     expect(isSensorType("contact_sensor")).toBe(true);
     expect(isSensorType("motion_sensor")).toBe(true);
+    expect(isSensorType("occupancy_sensor")).toBe(true);
     expect(isSensorType("light")).toBe(false);
     expect(isSensorType("switch")).toBe(false);
     expect(isSensorType("unknown_type")).toBe(false);
@@ -83,14 +86,14 @@ describe("Mapper - Phase 1 Device Normalization", () => {
   it("should list all supported device types", () => {
     const allTypes = getSupportedDeviceTypes();
     expect(allTypes).toContain("light");
-    expect(allTypes).toContain("temp_sensor");
+    expect(allTypes).toContain("temperature_sensor");
     expect(allTypes).toContain("lock");
-    expect(allTypes.length).toBe(9);
+    expect(allTypes.length).toBe(11);
   });
 
   it("should list all actuator types separately", () => {
     const actuators = getActuatorTypes();
-    expect(actuators).toEqual(["light", "dimmer_light", "switch", "lock", "cover"]);
+    expect(actuators).toEqual(["light", "light_color", "light_rgb", "switch", "lock", "cover"]);
   });
 
   it("should list all sensor types separately", () => {
@@ -98,9 +101,16 @@ describe("Mapper - Phase 1 Device Normalization", () => {
     expect(sensors).toEqual([
       "contact_sensor",
       "motion_sensor",
-      "temp_sensor",
+      "occupancy_sensor",
+      "temperature_sensor",
       "humidity_sensor",
     ]);
+  });
+
+  it("should normalize legacy aliases to canonical types", () => {
+    expect(canonicalizeHomecoreType("dimmer_light")).toBe("light");
+    expect(canonicalizeHomecoreType("temp_sensor")).toBe("temperature_sensor");
+    expect(canonicalizeHomecoreType("shade")).toBe("cover");
   });
 
   it("should handle brightness bounds in conversion", () => {
@@ -122,4 +132,3 @@ describe("Mapper - Phase 1 Device Normalization", () => {
     expect(fromMatterValue("position", 75)).toBe(75);
   });
 });
-

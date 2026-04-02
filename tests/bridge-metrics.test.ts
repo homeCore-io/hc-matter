@@ -221,7 +221,7 @@ describe("Phase 3: Bridge Metrics and Observability", () => {
   describe("Endpoint Metrics", () => {
     it("should track total endpoint count", () => {
       metrics.recordEndpointDiscovered("light");
-      metrics.recordEndpointDiscovered("dimmer_light");
+      metrics.recordEndpointDiscovered("light_color");
       metrics.recordEndpointDiscovered("switch");
 
       const m = metrics.getMetrics();
@@ -231,12 +231,12 @@ describe("Phase 3: Bridge Metrics and Observability", () => {
     it("should track endpoints by type", () => {
       metrics.recordEndpointDiscovered("light");
       metrics.recordEndpointDiscovered("light");
-      metrics.recordEndpointDiscovered("dimmer_light");
+      metrics.recordEndpointDiscovered("light_color");
       metrics.recordEndpointDiscovered("sensor");
 
       const m = metrics.getMetrics();
       expect(m.endpoints.byType.light).toBe(2);
-      expect(m.endpoints.byType.dimmer_light).toBe(1);
+      expect(m.endpoints.byType.light_color).toBe(1);
       expect(m.endpoints.byType.sensor).toBe(1);
     });
 
@@ -511,7 +511,7 @@ describe("Phase 3: Bridge Metrics and Observability", () => {
 
     it("should provide comprehensive observability data", () => {
       // Build metrics through realistic operations
-      const operationTypes = ["light", "dimmer_light", "switch", "sensor"];
+      const operationTypes = ["light", "light_color", "switch", "sensor"];
       for (const type of operationTypes) {
         metrics.recordEndpointDiscovered(type);
       }

@@ -230,8 +230,8 @@ describe("Phase 4: Real Matter.js Bridge Integration", () => {
     it("should register sensor endpoint with measurement clusters", () => {
       const composed = composeEndpoint(
         {
-          homecoreId: "temp_sensor_1",
-          homecoreType: "temp_sensor",
+          homecoreId: "temperature_sensor_1",
+          homecoreType: "temperature_sensor",
           matterType: "TemperatureSensor",
           nodeId: "node-1",
           endpointId: 2,
@@ -252,7 +252,7 @@ describe("Phase 4: Real Matter.js Bridge Integration", () => {
     it("should register multiple endpoint types", () => {
       const deviceTypes = [
         { type: "light", matterType: "OnOffLight" },
-        { type: "dimmer_light", matterType: "DimmableLight" },
+        { type: "light_color", matterType: "ExtendedColorLight" },
         { type: "switch", matterType: "OnOffSwitch" },
         { type: "lock", matterType: "DoorLock" },
         { type: "temperature_sensor", matterType: "TemperatureSensor" },

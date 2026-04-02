@@ -205,12 +205,12 @@ export class BridgeAttributeHandlers {
     }
 
     // Color temperature in mireds is already in correct format
-    if (homecoreAttribute === "color_temperature_mireds") {
+    if (homecoreAttribute === "color_temperature_mireds" || homecoreAttribute === "color_temp") {
       return value;
     }
 
     // Temperature in Celsius → Matter 0.01°C units
-    if (homecoreAttribute === "temperature_c" && typeof value === "number") {
+    if (homecoreAttribute === "temperature" && typeof value === "number") {
       return Math.round(value * 100);
     }
 
@@ -220,7 +220,10 @@ export class BridgeAttributeHandlers {
     }
 
     // Motion detected boolean → occupancy bitmap (bit 0)
-    if (homecoreAttribute === "motion_detected" && typeof value === "boolean") {
+    if (
+      (homecoreAttribute === "motion" || homecoreAttribute === "occupied") &&
+      typeof value === "boolean"
+    ) {
       return value ? 1 : 0;
     }
 
@@ -341,12 +344,12 @@ export class BridgeAttributeHandlers {
     }
 
     // Color temperature in mireds is already correct
-    if (homecoreAttribute === "color_temperature_mireds") {
+    if (homecoreAttribute === "color_temperature_mireds" || homecoreAttribute === "color_temp") {
       return value;
     }
 
     // Matter 0.01°C → Celsius
-    if (homecoreAttribute === "temperature_c" && typeof value === "number") {
+    if (homecoreAttribute === "temperature" && typeof value === "number") {
       return value / 100;
     }
 
@@ -356,7 +359,10 @@ export class BridgeAttributeHandlers {
     }
 
     // Occupancy bitmap → motion detected boolean
-    if (homecoreAttribute === "motion_detected" && typeof value === "number") {
+    if (
+      (homecoreAttribute === "motion" || homecoreAttribute === "occupied") &&
+      typeof value === "number"
+    ) {
       return (value & 1) !== 0;
     }
 

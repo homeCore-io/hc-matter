@@ -9,24 +9,52 @@ export interface DeviceMapping {
   attributeMap: Record<string, string>;
 }
 
+export function canonicalizeHomecoreType(homecoreType: string): string {
+  switch (homecoreType.trim()) {
+    case "dimmer_light":
+      return "light";
+    case "temp_sensor":
+      return "temperature_sensor";
+    case "shade":
+      return "cover";
+    case "motion":
+      return "motion_sensor";
+    case "occupancy_group":
+      return "occupancy_sensor";
+    default:
+      return homecoreType.trim();
+  }
+}
+
 export const DEVICE_MAPPINGS: Record<string, DeviceMapping> = {
   light: {
     homecoreType: "light",
+    matterType: "DimmableLight",
+    clusters: ["OnOff", "LevelControl"],
+    attributeMap: {
+      on: "OnOff/onOff",
+      brightness_pct: "LevelControl/currentLevel",
+    },
+  },
+  light_color: {
+    homecoreType: "light_color",
     matterType: "ExtendedColorLight",
     clusters: ["OnOff", "LevelControl", "ColorControl"],
     attributeMap: {
       on: "OnOff/onOff",
       brightness_pct: "LevelControl/currentLevel",
       color_xy: "ColorControl/currentX,currentY",
+      color_temp: "ColorControl/colorTemperatureMireds",
     },
   },
-  dimmer_light: {
-    homecoreType: "dimmer_light",
-    matterType: "DimmableLight",
-    clusters: ["OnOff", "LevelControl"],
+  light_rgb: {
+    homecoreType: "light_rgb",
+    matterType: "ExtendedColorLight",
+    clusters: ["OnOff", "LevelControl", "ColorControl"],
     attributeMap: {
       on: "OnOff/onOff",
       brightness_pct: "LevelControl/currentLevel",
+      color_xy: "ColorControl/currentX,currentY",
     },
   },
   switch: {
@@ -51,16 +79,25 @@ export const DEVICE_MAPPINGS: Record<string, DeviceMapping> = {
     matterType: "OccupancySensor",
     clusters: ["Occupancy", "BooleanState"],
     attributeMap: {
-      occupied: "Occupancy/occupancy",
+      occupancy: "Occupancy/occupancy",
       motion: "BooleanState/stateValue",
     },
   },
-  temp_sensor: {
-    homecoreType: "temp_sensor",
+  occupancy_sensor: {
+    homecoreType: "occupancy_sensor",
+    matterType: "OccupancySensor",
+    clusters: ["Occupancy"],
+    attributeMap: {
+      occupied: "Occupancy/occupancy",
+      occupancy: "Occupancy/occupancy",
+    },
+  },
+  temperature_sensor: {
+    homecoreType: "temperature_sensor",
     matterType: "TemperatureSensor",
     clusters: ["TemperatureMeasurement"],
     attributeMap: {
-      temperature_c: "TemperatureMeasurement/measuredValue",
+      temperature: "TemperatureMeasurement/measuredValue",
     },
   },
   humidity_sensor: {
@@ -93,23 +130,29 @@ export const DEVICE_MAPPINGS: Record<string, DeviceMapping> = {
  * Get Matter device mapping for HomeCore device type
  */
 export function getDeviceMapping(homecoreType: string): DeviceMapping | undefined {
-  return DEVICE_MAPPINGS[homecoreType];
+  return DEVICE_MAPPINGS[canonicalizeHomecoreType(homecoreType)];
 }
 
 /**
  * Determine if a device type is an actuator (can receive commands)
  */
 export function isActuatorType(homecoreType: string): boolean {
-  const actuatorTypes = ["light", "dimmer_light", "switch", "lock", "cover"];
-  return actuatorTypes.includes(homecoreType);
+  const actuatorTypes = ["light", "light_color", "light_rgb", "switch", "lock", "cover"];
+  return actuatorTypes.includes(canonicalizeHomecoreType(homecoreType));
 }
 
 /**
  * Determine if a device type is a sensor (read-only)
  */
 export function isSensorType(homecoreType: string): boolean {
-  const sensorTypes = ["contact_sensor", "motion_sensor", "temp_sensor", "humidity_sensor"];
-  return sensorTypes.includes(homecoreType);
+  const sensorTypes = [
+    "contact_sensor",
+    "motion_sensor",
+    "occupancy_sensor",
+    "temperature_sensor",
+    "humidity_sensor",
+  ];
+  return sensorTypes.includes(canonicalizeHomecoreType(homecoreType));
 }
 
 /**
@@ -143,7 +186,7 @@ export function toMatterValue(homecoreKey: string, value: unknown): unknown {
   }
 
   // Handle temperature: HomeCore uses Celsius, Matter uses centidegrees (1/100 °C)
-  if (homecoreKey === "temperature_c") {
+  if (homecoreKey === "temperature") {
     return Math.round(value * 100);
   }
 
@@ -177,7 +220,7 @@ export function fromMatterValue(homecoreKey: string, value: unknown): unknown {
   }
 
   // Handle temperature: Matter uses centidegrees, HomeCore uses Celsius
-  if (homecoreKey === "temperature_c") {
+  if (homecoreKey === "temperature") {
     return Math.round((value / 100) * 10) / 10; // Round to 1 decimal place
   }
 

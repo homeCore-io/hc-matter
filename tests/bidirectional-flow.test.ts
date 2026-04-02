@@ -282,7 +282,7 @@ describe("Phase 3: Bidirectional Command Flow", () => {
     });
 
     it("should sync temperature sensor reading to bridge", async () => {
-      const endpointId = "temp_sensor_1";
+      const endpointId = "temperature_sensor_1";
 
       // Simulate HomeCore sensor reading (22.5°C)
       const tempCelsius = 22.5;
@@ -291,7 +291,7 @@ describe("Phase 3: Bidirectional Command Flow", () => {
       await wsBridge.emitStateUpdate(
         `homecore/devices/${endpointId}/state`,
         {
-          temperature_c: tempCelsius,
+          temperature: tempCelsius,
         }
       );
 
@@ -472,7 +472,7 @@ describe("Phase 3: Bidirectional Command Flow", () => {
     });
 
     it("should route cover position command", async () => {
-      const endpointId = "shade_living_room";
+      const endpointId = "cover_living_room";
 
       // External controller sets position to 75%
       const positionPercent = 75;

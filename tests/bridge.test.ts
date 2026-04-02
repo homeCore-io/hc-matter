@@ -19,20 +19,8 @@ const logger = new Logger("test");
 
 describe("Bridge Endpoint Factory", () => {
   describe("Device Cluster Composition", () => {
-    it("should compose light clusters (OnOff, LevelControl, ColorControl)", () => {
+    it("should compose light clusters (OnOff, LevelControl)", () => {
       const clusters = composeDeviceClusters("light", logger);
-
-      expect(clusters.length).toBeGreaterThanOrEqual(3);
-      const clusterIds = clusters.map((c) => c.clusterId);
-
-      expect(clusterIds).toContain(MATTER_CLUSTER_IDS.BASIC_INFORMATION);
-      expect(clusterIds).toContain(MATTER_CLUSTER_IDS.ON_OFF);
-      expect(clusterIds).toContain(MATTER_CLUSTER_IDS.LEVEL_CONTROL);
-      expect(clusterIds).toContain(MATTER_CLUSTER_IDS.COLOR_CONTROL);
-    });
-
-    it("should compose dimmer_light clusters (OnOff, LevelControl)", () => {
-      const clusters = composeDeviceClusters("dimmer_light", logger);
 
       expect(clusters.length).toBeGreaterThanOrEqual(2);
       const clusterIds = clusters.map((c) => c.clusterId);
@@ -41,6 +29,18 @@ describe("Bridge Endpoint Factory", () => {
       expect(clusterIds).toContain(MATTER_CLUSTER_IDS.ON_OFF);
       expect(clusterIds).toContain(MATTER_CLUSTER_IDS.LEVEL_CONTROL);
       expect(clusterIds).not.toContain(MATTER_CLUSTER_IDS.COLOR_CONTROL);
+    });
+
+    it("should compose light_color clusters (OnOff, LevelControl, ColorControl)", () => {
+      const clusters = composeDeviceClusters("light_color", logger);
+
+      expect(clusters.length).toBeGreaterThanOrEqual(3);
+      const clusterIds = clusters.map((c) => c.clusterId);
+
+      expect(clusterIds).toContain(MATTER_CLUSTER_IDS.BASIC_INFORMATION);
+      expect(clusterIds).toContain(MATTER_CLUSTER_IDS.ON_OFF);
+      expect(clusterIds).toContain(MATTER_CLUSTER_IDS.LEVEL_CONTROL);
+      expect(clusterIds).toContain(MATTER_CLUSTER_IDS.COLOR_CONTROL);
     });
 
     it("should compose switch clusters (OnOff)", () => {
@@ -73,8 +73,8 @@ describe("Bridge Endpoint Factory", () => {
       expect(clusterIds).toContain(MATTER_CLUSTER_IDS.OCCUPANCY_SENSING);
     });
 
-    it("should compose temp_sensor clusters (TemperatureMeasurement)", () => {
-      const clusters = composeDeviceClusters("temp_sensor", logger);
+    it("should compose temperature_sensor clusters (TemperatureMeasurement)", () => {
+      const clusters = composeDeviceClusters("temperature_sensor", logger);
 
       expect(clusters.length).toBeGreaterThanOrEqual(1);
       const clusterIds = clusters.map((c) => c.clusterId);
@@ -113,7 +113,7 @@ describe("Bridge Endpoint Factory", () => {
       expect(clusterIds).toContain(MATTER_CLUSTER_IDS.WINDOW_COVERING);
     });
 
-    it("should compose shade clusters (WindowCovering, same as cover)", () => {
+    it("should compose shade alias as cover clusters", () => {
       const clusters = composeDeviceClusters("shade", logger);
 
       expect(clusters.length).toBeGreaterThanOrEqual(1);
@@ -126,15 +126,14 @@ describe("Bridge Endpoint Factory", () => {
     it("should always include BasicInformation cluster", () => {
       const deviceTypes = [
         "light",
-        "dimmer_light",
+        "light_color",
         "switch",
         "contact_sensor",
         "motion_sensor",
-        "temp_sensor",
+        "temperature_sensor",
         "humidity_sensor",
         "lock",
         "cover",
-        "shade",
       ];
 
       for (const type of deviceTypes) {
@@ -219,7 +218,7 @@ describe("Bridge Endpoint Factory", () => {
       const clusterIds = getClusterIds(endpoint);
 
       expect(Array.isArray(clusterIds)).toBe(true);
-      expect(clusterIds.length).toBeGreaterThanOrEqual(4);
+      expect(clusterIds.length).toBeGreaterThanOrEqual(3);
       expect(clusterIds.every((id) => typeof id === "number")).toBe(true);
     });
   });
@@ -560,10 +559,10 @@ describe("Bridge Endpoint Factory", () => {
       const convert = (handlers as any).convertHomeCorValueToMatter.bind(handlers);
 
       // 20°C → 2000 (0.01°C units)
-      expect(convert("temperature_c", 20, "temp_sensor")).toBe(2000);
+      expect(convert("temperature", 20, "temperature_sensor")).toBe(2000);
 
       // 25.5°C → 2550
-      expect(convert("temperature_c", 25.5, "temp_sensor")).toBe(2550);
+      expect(convert("temperature", 25.5, "temperature_sensor")).toBe(2550);
     });
 
     it("should convert motion detected boolean to occupancy bitmap", async () => {
@@ -578,10 +577,10 @@ describe("Bridge Endpoint Factory", () => {
       const convert = (handlers as any).convertHomeCorValueToMatter.bind(handlers);
 
       // Motion detected → occupancy bit 0 set
-      expect(convert("motion_detected", true, "motion_sensor")).toBe(1);
+      expect(convert("motion", true, "motion_sensor")).toBe(1);
 
       // No motion → occupancy bit 0 clear
-      expect(convert("motion_detected", false, "motion_sensor")).toBe(0);
+      expect(convert("motion", false, "motion_sensor")).toBe(0);
     });
 
     it("should convert lock state boolean to Matter lock state enum", async () => {
@@ -636,10 +635,10 @@ describe("Bridge Endpoint Factory", () => {
       const convertBack = (handlers as any).convertMatterValueToHomeCore.bind(handlers);
 
       // Matter 2000 → 20°C
-      expect(convertBack("temperature_c", 2000, "temp_sensor")).toBe(20);
+      expect(convertBack("temperature", 2000, "temperature_sensor")).toBe(20);
 
       // Matter 2550 → 25.5°C
-      expect(convertBack("temperature_c", 2550, "temp_sensor")).toBe(25.5);
+      expect(convertBack("temperature", 2550, "temperature_sensor")).toBe(25.5);
     });
 
     it("should get writable attributes for endpoint", async () => {

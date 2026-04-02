@@ -368,8 +368,8 @@ describe("Phase 3: Bridge Discovery and External Controller", () => {
       expect(value).toBeNull(); // Not yet set
     });
 
-    it("should read brightness level from dimmer endpoint", () => {
-      externalController.discoverBridgeEndpoints(1, ["dimmer_light"]);
+    it("should read brightness level from light endpoint", () => {
+      externalController.discoverBridgeEndpoints(1, ["light"]);
       externalController.discoverClusters(1, [
         MATTER_CLUSTER_IDS.LEVEL_CONTROL,
       ]);
@@ -430,8 +430,8 @@ describe("Phase 3: Bridge Discovery and External Controller", () => {
       });
     });
 
-    it("should write brightness command to dimmer endpoint", () => {
-      externalController.discoverBridgeEndpoints(1, ["dimmer_light"]);
+    it("should write brightness command to light endpoint", () => {
+      externalController.discoverBridgeEndpoints(1, ["light"]);
       externalController.discoverClusters(1, [
         MATTER_CLUSTER_IDS.LEVEL_CONTROL,
       ]);
@@ -507,7 +507,7 @@ describe("Phase 3: Bridge Discovery and External Controller", () => {
     });
 
     it("should track multiple commands in log", () => {
-      externalController.discoverBridgeEndpoints(2, ["light", "dimmer_light"]);
+      externalController.discoverBridgeEndpoints(2, ["light", "light_color"]);
       externalController.discoverClusters(1, [MATTER_CLUSTER_IDS.ON_OFF]);
       externalController.discoverClusters(2, [
         MATTER_CLUSTER_IDS.LEVEL_CONTROL,
@@ -537,7 +537,7 @@ describe("Phase 3: Bridge Discovery and External Controller", () => {
     it("should track endpoint count on bridge", () => {
       externalController.discoverBridgeEndpoints(5, [
         "light",
-        "dimmer_light",
+        "light_color",
         "switch",
         "contact_sensor",
         "temperature_sensor",
@@ -548,7 +548,7 @@ describe("Phase 3: Bridge Discovery and External Controller", () => {
     });
 
     it("should track command count per endpoint", () => {
-      externalController.discoverBridgeEndpoints(2, ["light", "dimmer_light"]);
+      externalController.discoverBridgeEndpoints(2, ["light", "light_color"]);
       externalController.discoverClusters(1, [MATTER_CLUSTER_IDS.ON_OFF]);
       externalController.discoverClusters(2, [
         MATTER_CLUSTER_IDS.LEVEL_CONTROL,
