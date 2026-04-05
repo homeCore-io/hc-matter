@@ -1,6 +1,7 @@
 {
   "name": "hc-matter",
   "version": "1.0.0",
+  "license": "MIT OR Apache-2.0",
   "description": "HomeCore Matter Plugin (matter.js based controller and bridge)",
   "main": "dist/main.js",
   "type": "module",
