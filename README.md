@@ -1,3 +1,14 @@
+> [!IMPORTANT]
+> **This repository was never implemented.**
+>
+> It held no source — only a scaffold — and was archived on 2026-08-03 rather
+> than folded into [homeCore-io/homeCore](https://github.com/homeCore-io/homeCore)
+> with the plugins that were real. Nothing here ever shipped, and no release or
+> registry entry refers to it.
+>
+> If this device type gets built, it starts as a new plugin under `plugins/` in
+> the monorepo.
+
 # hc-matter — HomeCore Matter Plugin
 
 A fresh TypeScript-based Matter controller and bridge plugin for HomeCore, using [matter.js](https://github.com/matter-js/matter.js).
