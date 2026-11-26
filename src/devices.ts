@@ -11,6 +11,7 @@
 // the same table in reverse, so a trait keeps "which attribute means what" in
 // one place.
 
+import { createHash } from "node:crypto";
 import { Attr, Cluster, DeviceTypes, Feature, Global, deviceTypeName } from "./clusters.js";
 import {
   coverFromMatter, coverToMatter, halfPercent, hundredths, illuminanceToLux, kelvinToMireds, levelToPct, milli,
@@ -29,6 +30,8 @@ export interface NodeData {
   is_bridge: boolean;
   attributes: Attributes;
   endpoint_parents?: Record<string, number>;
+  date_commissioned?: string;
+  last_interview?: string;
 }
 
 export interface StateLabel { label: string; verb?: string }
@@ -78,8 +81,33 @@ export function nodeIdOf(node: NodeData): string {
   return String(node.node_id);
 }
 
-export function deviceId(nodeId: string, endpoint: number): string {
-  return `matter_${nodeId}_${endpoint}`;
+/** A short, path-safe stand-in for a Matter unique id. */
+function tag(uid: string, length: number): string {
+  return createHash("sha256").update(uid).digest("hex").slice(0, length);
+}
+
+/**
+ * A device's homeCore id, from what the device says it is rather than the
+ * node number this controller happened to give it, so pairing it again
+ * (a reset, a lost fabric) brings back the same device, with its name, room,
+ * history and automations.
+ *
+ * - `matter_<node uid>_<endpoint>`: a device's own endpoints.
+ * - `matter_<node uid>_<bridged uid>`: a device behind a bridge, which a
+ *   bridge may move to another endpoint; `…_<endpoint>` added for a part of
+ *   one (an endpoint under the bridged one).
+ * - `matter_n<node>_<endpoint>`: a node that gives no unique id (before
+ *   Matter 1.2 it was optional).
+ */
+export function deviceId(node: NodeData, endpoint: number, view?: EndpointView): string {
+  const uid = node.attributes[`0/${Cluster.BasicInformation}/${Attr.BasicInformation.UniqueId}`];
+  if (typeof uid !== "string" || !uid) return `matter_n${nodeIdOf(node)}_${endpoint}`;
+  const base = `matter_${tag(uid, 12)}`;
+  for (const ep of view?.searched ?? []) {
+    const b = view!.at(ep, Cluster.BridgedDeviceBasicInformation, Attr.BridgedDeviceBasicInformation.UniqueId);
+    if (typeof b === "string" && b) return ep === endpoint ? `${base}_${tag(b, 8)}` : `${base}_${tag(b, 8)}_${endpoint}`;
+  }
+  return `${base}_${endpoint}`;
 }
 
 /** The endpoints a node has attributes for, in order. */
@@ -720,7 +748,7 @@ export function devicesOf(node: NodeData): Device[] {
     if (unmappedClusters(f.view)) schema.attributes.matter_unmapped_clusters = diag("Matter clusters not shown");
     if (schema.actions!.length === 0) delete schema.actions;
     return {
-      id: deviceId(nodeId, f.endpoint), nodeId, endpoint: f.endpoint, name, kind: f.kind,
+      id: deviceId(node, f.endpoint, f.view), nodeId, endpoint: f.endpoint, name, kind: f.kind,
       matterType: f.types.map(deviceTypeName).join(", "), schema,
     };
   });

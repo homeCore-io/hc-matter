@@ -19,7 +19,24 @@ describe("devices of a bridge", () => {
 
   it("makes one device per bridged endpoint, and none for the root or the aggregator", () => {
     expect(devices.map((d) => d.endpoint)).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
-    expect(devices.map((d) => d.id)).toContain("matter_1_2");
+  });
+
+  it("names devices by what they are, so pairing again brings back the same ids", () => {
+    // The node's UniqueID and each bridged device's, hashed: not the node number.
+    const ids = devices.map((d) => d.id);
+    for (const id of ids) expect(id).toMatch(/^matter_[0-9a-f]{12}_[0-9a-f]{8}$/);
+    expect(new Set(ids).size).toBe(ids.length);
+    const repaired = devicesOf({ ...fixture(), node_id: 7 }).map((d) => d.id);
+    expect(repaired).toEqual(ids);
+  });
+
+  it("follows a bridged device the bridge has moved to another endpoint", () => {
+    const n = fixture();
+    // The lamp's bridged id now on endpoint 3, the plug's on 2.
+    n.attributes["2/57/18"] = "plug";
+    n.attributes["3/57/18"] = "light";
+    const moved = devicesOf(n);
+    expect(moved.find((d) => d.name === "Desk Lamp")!.id).toBe(byName(devices, "Kettle Plug").id);
   });
 
   it("names devices by their bridged name, and says which is which when two share one", () => {
@@ -179,7 +196,10 @@ describe("a plain node", () => {
     };
     const [d, ...rest] = devicesOf(node);
     expect(rest).toEqual([]);
-    expect(d).toMatchObject({ id: "matter_9007199254740993_1", name: "Acme Door Sensor", kind: "contact_sensor" });
+    // No UniqueID (optional before Matter 1.2): the node number it is.
+    expect(d).toMatchObject({ id: "matter_n9007199254740993_1", name: "Acme Door Sensor", kind: "contact_sensor" });
+    const withUid = devicesOf({ ...node, attributes: { ...node.attributes, "0/40/18": "acme-0001" } })[0];
+    expect(withUid.id).toMatch(/^matter_[0-9a-f]{12}_1$/);
     expect(stateOf(node, d)).toMatchObject({ open: true, battery_pct: 100, battery_low: true, vendor: "Acme" });
     expect(devicesTouchedBy(node, [d], "0/47/12")).toEqual([d]);
   });

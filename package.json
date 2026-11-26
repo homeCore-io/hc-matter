@@ -1,23 +1,25 @@
 {
   "name": "hc-matter",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Matter devices in homeCore, through the Open Home Foundation Matter server",
   "license": "MIT OR Apache-2.0",
   "type": "module",
   "main": "out/main.js",
   "files": [
     "out/**/*.js",
-    "out/**/*.js.map"
+    "out/**/*.js.map",
+    "ui/dist/**"
   ],
   "homecore": {
     "id": "plugin.matter",
     "name": "Matter",
-    "category": "Devices"
+    "category": "Devices",
+    "ui": "ui/dist"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && npm --prefix ui ci --ignore-scripts --no-audit --no-fund && npm --prefix ui run build",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && npm --prefix ui test",
     "standin": "node standin/standin.mjs"
   },
   "dependencies": {

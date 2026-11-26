@@ -4,11 +4,15 @@
 // fabric, pairs, subscribes to every node and keeps their attributes. This
 // plugin turns that into homeCore devices (devices.ts), state and commands.
 
-import { Action, Capabilities, Concurrency, PluginBase, PluginNotice, type Caller, type StreamContext } from "homecore-plugin-sdk";
+import { Capabilities, PluginBase, PluginNotice, type Caller, type StreamContext } from "homecore-plugin-sdk";
 import type { NodesChangedDetail } from "@matter-server/ws-client";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Config } from "./config.js";
 import { availableOf, commandFor, devicesOf, devicesTouchedBy, nodeIdOf, stateOf, type Device, type MatterOp, type NodeData } from "./devices.js";
 import { MatterLink, nodeDataOf, parseNodeId } from "./link.js";
+import { ACTIONS, SHARE_WINDOW_SECS, ownFabricIndex, summarize, summarizeFabrics } from "./admin.js";
 import { MatterServerProcess, type Log, type LogLevel } from "./server.js";
 
 /** State that follows a command within this long is reported as its result. */
@@ -16,36 +20,6 @@ const CAUSE_WINDOW_MS = 5_000;
 const PAIR_TIMEOUT_MS = 5 * 60_000;
 const LEVEL_RANK: Record<string, number> = { trace: 0, debug: 1, info: 2, warn: 3, error: 4 };
 
-export const ACTIONS = [
-  new Action({
-    id: "pair",
-    label: "Pair a device",
-    description: "Pair a Matter device from its setup code: the QR code's text (MT:…) or the 11 or 21 digit code. "
-      + "The device must already be on the network: shared from another app (its \"share\" or \"pairing mode\" option), "
-      + "or a Wi-Fi or Thread device that has been set up before.",
-    params: {
-      type: "object",
-      required: ["code"],
-      properties: { code: { type: "string", title: "Setup code", minLength: 11 } },
-    },
-    stream: true,
-    concurrency: Concurrency.SINGLE,
-    itemKey: "id",
-    itemOperations: ["add"],
-    timeoutMs: PAIR_TIMEOUT_MS + 30_000,
-  }),
-  new Action({
-    id: "remove_node",
-    label: "Remove a device",
-    description: "Remove a paired Matter device from homeCore and from this controller's fabric. "
-      + "Other apps it is shared with keep it.",
-    params: {
-      type: "object",
-      required: ["node_id"],
-      properties: { node_id: { type: "string", title: "Node id", pattern: "^[0-9]+$" } },
-    },
-  }),
-];
 
 export class MatterPlugin extends PluginBase {
   private readonly nodes = new Map<string, NodeData>();
@@ -108,6 +82,10 @@ export class MatterPlugin extends PluginBase {
 
   start(): void {
     this.enableLogForwarding("info");
+    // Its screen (ui/): where a runtime unpacked it, else the built folder
+    // beside the source.
+    const ui = process.env.HC_PLUGIN_UI_DIR ?? join(dirname(fileURLToPath(import.meta.url)), "..", "ui", "dist");
+    if (existsSync(join(ui, "manifest.json"))) this.withUiDir(ui, this.version);
     this.enableDevicePersistence(`${this.config.matter.storageDir}/../.published-device-ids.json`);
     this.server.start();
     this.run();
@@ -306,7 +284,105 @@ export class MatterPlugin extends PluginBase {
   async onAction(action: string, params: Record<string, unknown>, ctx: StreamContext | null, caller?: Caller | null): Promise<unknown> {
     if (action === "pair" && ctx) return this.pair(String(params.code ?? ""), ctx, caller);
     if (action === "remove_node") return this.removeNode(String(params.node_id ?? ""), caller);
+    if (action === "nodes") return { nodes: [...this.nodes.values()].map(summarize) };
+    if (action === "server_status") return this.serverStatus();
+    const who = caller?.username ?? "someone";
+    if (action === "share_node") {
+      const { client, nodeId, text } = this.target(params);
+      this.log("info", `sharing Matter node ${text} for ${who}`);
+      const p = await client.openCommissioningWindow(nodeId, SHARE_WINDOW_SECS);
+      return {
+        manual_code: p.setup_manual_code,
+        qr_code: p.setup_qr_code,
+        expires_in_secs: p.commissioning_timeout ?? SHARE_WINDOW_SECS,
+      };
+    }
+    if (action === "fabrics") {
+      const { client, nodeId, node } = this.target(params);
+      return { fabrics: summarizeFabrics(await client.getMatterFabrics(nodeId), ownFabricIndex(node)) };
+    }
+    if (action === "remove_fabric") {
+      const { client, nodeId, node, text } = this.target(params);
+      const index = Number(params.fabric_index);
+      if (!Number.isInteger(index)) throw new Error("fabric_index is required");
+      if (index === ownFabricIndex(node)) throw new Error("That is this controller. To take the device out of homeCore, remove the device.");
+      this.log("info", `removing fabric ${index} from Matter node ${text} for ${who}`);
+      await client.removeMatterFabric(nodeId, index);
+      return { removed: index };
+    }
+    if (action === "reinterview") {
+      const { client, nodeId, text } = this.target(params);
+      this.log("info", `re-interviewing Matter node ${text} for ${who}`);
+      await client.interviewNode(nodeId);
+      return { node_id: text };
+    }
+    if ((action === "check_update" || action === "update_firmware") && !this.config.matter.firmwareUpdates) {
+      throw new Error("Firmware updates are turned off in this plugin's settings (firmware_updates = false).");
+    }
+    if (action === "check_update") {
+      const { client, nodeId } = this.target(params);
+      const v = await client.checkNodeUpdate(nodeId);
+      return v
+        ? { available: true, version: v.software_version, version_string: v.software_version_string, release_notes_url: v.release_notes_url ?? null }
+        : { available: false };
+    }
+    if (action === "update_firmware") {
+      const { client, nodeId, text } = this.target(params);
+      const version = Number(params.version);
+      if (!Number.isInteger(version)) throw new Error("version is required");
+      this.log("info", `updating Matter node ${text} to firmware ${version} for ${who}`);
+      await client.updateNode(nodeId, version);
+      return { node_id: text, version };
+    }
+    if (action === "set_wifi") {
+      const client = this.requireClient();
+      const ssid = String(params.ssid ?? "");
+      if (!ssid) throw new Error("ssid is required");
+      await client.setWifiCredentials(ssid, String(params.password ?? ""));
+      this.log("info", `Wi-Fi credentials for pairing set by ${who}`);
+      return { wifi_credentials_set: true };
+    }
+    if (action === "set_thread_dataset") {
+      const client = this.requireClient();
+      const dataset = String(params.dataset ?? "").trim();
+      if (!/^[0-9A-Fa-f]+$/.test(dataset) || dataset.length % 2) throw new Error("the dataset is hex, an even number of digits");
+      await client.setThreadOperationalDataset(dataset);
+      this.log("info", `Thread dataset for pairing set by ${who}`);
+      return { thread_credentials_set: true };
+    }
     return null;
+  }
+
+  private requireClient(): NonNullable<MatterLink["client"]> {
+    const client = this.link.client;
+    if (!client) throw new Error("The Matter server is not running yet; try again in a moment.");
+    return client;
+  }
+
+  /** The client and the node an admin action names. */
+  private target(params: Record<string, unknown>) {
+    const client = this.requireClient();
+    const text = String(params.node_id ?? "");
+    const node = this.nodes.get(text);
+    if (!node) throw new Error(`No Matter node ${text} is paired`);
+    return { client, node, text, nodeId: parseNodeId(text) };
+  }
+
+  private serverStatus(): Record<string, unknown> {
+    const client = this.link.client;
+    if (!client) return { connected: false, problem: this.serverProblem ? "failing" : "starting" };
+    const i = client.serverInfo;
+    return {
+      connected: true,
+      version: i.sdk_version,
+      schema_version: i.schema_version,
+      fabric_id: String(i.compressed_fabric_id),
+      wifi_credentials_set: i.wifi_credentials_set,
+      thread_credentials_set: i.thread_credentials_set,
+      bluetooth: i.bluetooth_enabled,
+      allow_test_devices: this.config.matter.allowTestDevices,
+      nodes: this.nodes.size,
+    };
   }
 
   private async pair(code: string, ctx: StreamContext, caller?: Caller | null): Promise<void> {
@@ -338,8 +414,7 @@ export class MatterPlugin extends PluginBase {
   }
 
   private async removeNode(nodeIdText: string, caller?: Caller | null): Promise<unknown> {
-    const client = this.link.client;
-    if (!client) throw new Error("The Matter server is not running yet; try again in a moment.");
+    const client = this.requireClient();
     if (!this.nodes.has(nodeIdText)) throw new Error(`No Matter node ${nodeIdText} is paired`);
     this.log("info", `removing Matter node ${nodeIdText} for ${caller?.username ?? "someone"}`);
     await client.removeNode(parseNodeId(nodeIdText));

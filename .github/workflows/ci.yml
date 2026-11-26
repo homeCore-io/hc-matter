@@ -38,8 +38,9 @@ jobs:
           cache: npm
       - run: npm ci --no-audit --no-fund
       - run: npm run typecheck
-      - run: npm test
+      # Builds the screen too, whose tests run on what is built.
       - run: npm run build
+      - run: npm test
 
   runtime-install:
     name: the artifact's install runs matter-server

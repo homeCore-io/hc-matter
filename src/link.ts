@@ -23,6 +23,8 @@ export function nodeDataOf(node: MatterNode): NodeData {
     is_bridge: node.is_bridge,
     attributes: node.attributes,
     endpoint_parents: node.endpoint_parents,
+    date_commissioned: node.date_commissioned,
+    last_interview: node.last_interview,
   };
 }
 

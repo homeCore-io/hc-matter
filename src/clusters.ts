@@ -34,8 +34,8 @@ export const Global = {
 
 export const Attr = {
   Descriptor: { DeviceTypeList: 0, ServerList: 1, PartsList: 3 },
-  BasicInformation: { VendorName: 1, VendorId: 2, ProductName: 3, ProductId: 4, NodeLabel: 5, SoftwareVersionString: 10, SerialNumber: 15 },
-  BridgedDeviceBasicInformation: { VendorName: 1, ProductName: 3, NodeLabel: 5, SoftwareVersionString: 10, SerialNumber: 15, Reachable: 17 },
+  BasicInformation: { VendorName: 1, VendorId: 2, ProductName: 3, ProductId: 4, NodeLabel: 5, SoftwareVersionString: 10, SerialNumber: 15, UniqueId: 18 },
+  BridgedDeviceBasicInformation: { VendorName: 1, ProductName: 3, NodeLabel: 5, SoftwareVersionString: 10, SerialNumber: 15, Reachable: 17, UniqueId: 18 },
   OnOff: { OnOff: 0 },
   LevelControl: { CurrentLevel: 0, MinLevel: 2, MaxLevel: 3 },
   ColorControl: {

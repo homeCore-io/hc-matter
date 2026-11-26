@@ -43,8 +43,9 @@ network cannot reach any device.
 
 ## Pairing
 
-Use the plugin's **Pair a device** action with the device's setup code: the
-text of its QR code (`MT:…`), or its 11- or 21-digit code.
+On the plugin's page in homeCore (Settings › Plugins › Matter), enter the
+device's setup code: the text of its QR code (`MT:…`), or its 11- or 21-digit
+code. Progress shows as it goes, then the devices it brought.
 
 Pairing is over the network only. That means:
 
@@ -57,13 +58,51 @@ Pairing is over the network only. That means:
 - **A brand-new device that has to be set up over Bluetooth** can't be paired
   here yet. Set it up in its usual app first, then share it.
 
-**Remove a device** (`remove_node`, with the node id) removes it from homeCore
-and from this controller's fabric. Other apps it is shared with keep it.
+## The plugin's page
+
+The page lists every paired Matter device (a "node"): whether it answers, what
+it is, its firmware, and the homeCore devices it became. For each one:
+
+- **Share** opens it to another app for 15 minutes and shows a QR code and a
+  manual code to add it there. It stays in homeCore.
+- **Shared with** lists the controllers it is paired with (Apple Home, Google
+  Home, …), and removes any of them but homeCore.
+- **Check firmware** asks whether a newer firmware is published, and installs
+  it if you say so; progress shows on the device.
+- **Read again** asks the device again what it has (after a firmware update).
+- **Remove** takes it out of homeCore and off this controller. Other apps it
+  is shared with keep it.
+
+*Networks for new devices* holds the Wi-Fi network and the Thread dataset that
+a device joins when it is paired before it is on any network. A device shared
+from another app needs neither.
+
+Each of these is also a plugin action, for automations, hc-mcp or the API:
+
+| Action | Takes | Answers |
+|---|---|---|
+| `pair` (streaming) | `code` | progress, one item per device, then `node_id` and `devices` |
+| `nodes` | | `nodes`: each node, its state and its devices |
+| `server_status` | | whether matter-server runs, its version, Wi-Fi/Thread set |
+| `share_node` | `node_id` | `manual_code`, `qr_code`, `expires_in_secs` |
+| `fabrics` | `node_id` | `fabrics`, this controller's marked |
+| `remove_fabric` | `node_id`, `fabric_index` | |
+| `reinterview` | `node_id` | |
+| `check_update` | `node_id` | `available`, `version`, `version_string` |
+| `update_firmware` | `node_id`, `version` | |
+| `remove_node` | `node_id` | |
+| `set_wifi` | `ssid`, `password` | |
+| `set_thread_dataset` | `dataset` (hex) | |
 
 ## Devices
 
-Each Matter endpoint that has a device type becomes one homeCore device, with
-id `matter_<node>_<endpoint>`. Devices behind a Matter bridge (a Hue bridge, an
+Each Matter endpoint that has a device type becomes one homeCore device. Its id
+comes from the device's own Matter unique id, not the number this controller
+gave it, so a device paired again (after a reset, or a lost fabric) comes back
+as the same homeCore device, with its name, room, history and automations:
+`matter_<node uid>_<endpoint>`, or `matter_<node uid>_<bridged uid>` behind a
+bridge (the uids hashed). A device that gives no unique id (optional before
+Matter 1.2) is `matter_n<node>_<endpoint>`. Devices behind a Matter bridge (a Hue bridge, an
 IKEA hub) each become their own device. A device's name is its bridged name, or
 else the node's. When two endpoints share a name, what each one is gets added,
 as in "Hall Climate temperature". Rename and place devices in homeCore.
@@ -123,8 +162,8 @@ In the plugin's config file, under `[matter]`:
 
 ```sh
 npm ci
-npm test          # the mapping, conversions, config; no network
-npm run build     # TypeScript to out/
+npm run build     # TypeScript to out/, and the page to ui/dist
+npm test          # the mapping, conversions, config, the page's logic; no network
 ```
 
 The device mapping is pure (`src/devices.ts`). It is tested against a node dump

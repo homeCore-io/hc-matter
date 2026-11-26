@@ -51,6 +51,7 @@ declare module "homecore-plugin-sdk" {
     stop(): Promise<void>;
     enableManagement(opts: { intervalSecs?: number; version?: string; configPath?: string; capabilities?: Capabilities }): void;
     enableLogForwarding(minLevel?: string): void;
+    withUiDir(dir: string, version: string): this;
     enableDevicePersistence(path: string): void;
     reconcileDevices(live: Iterable<string>): { staleUnregistered: string[]; unknownInLive: string[] };
     registerDeviceFull(deviceId: string, name: string, opts?: { deviceType?: string; area?: string; capabilities?: object }): void;
