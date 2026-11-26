@@ -3,7 +3,7 @@
 // dump, not a hand-written one.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { availableOf, commandFor, devicesOf, devicesTouchedBy, stateOf, type Device, type NodeData } from "../src/devices.js";
+import { availableOf, buttonPatches, commandFor, devicesOf, devicesTouchedBy, stateOf, type Device, type NodeData } from "../src/devices.js";
 
 const fixture = (): NodeData => JSON.parse(readFileSync(new URL("./fixtures/standin-node.json", import.meta.url), "utf8"));
 
@@ -235,5 +235,53 @@ describe("refinements", () => {
     const plug = byName(devicesOf(node), "Kettle Plug");
     expect(commandFor(node, plug, { brightness_pct: 50 }).error).toMatch(/cannot be set: brightness_pct/);
     expect(commandFor(node, plug, { transition_ms: 500 }).error).toBeUndefined();
+  });
+});
+
+describe("remotes", () => {
+  const sw = (ep: number, features = 0b11110) => ({
+    [`${ep}/29/0`]: [{ "0": 0x000f, "1": 1 }], [`${ep}/29/1`]: [29, 59], [`${ep}/59/65532`]: features, [`${ep}/59/1`]: 0,
+  });
+  const node: NodeData = {
+    node_id: 5, available: true, is_bridge: false,
+    attributes: { "0/40/3": "Hue dimmer", "0/40/18": "dimmer-1", "0/29/3": [1, 2, 3], ...sw(1), ...sw(2), ...sw(3) },
+  };
+
+  it("are one device with its buttons, numbered in endpoint order", () => {
+    const [d, ...rest] = devicesOf(node);
+    expect(rest).toEqual([]);
+    expect(d).toMatchObject({ name: "Hue dimmer", kind: "remote", buttons: [1, 2, 3] });
+    expect(Object.keys(d.schema.attributes)).toEqual(expect.arrayContaining(["button_1", "button_2", "button_3", "pushed", "held", "released", "double_tapped", "last_button"]));
+    expect(d.schema.attributes.button_2.options?.map((o) => o.value)).toEqual(["press", "hold", "release"]);
+  });
+
+  it("turn presses into what homeCore's remotes say, set then cleared", () => {
+    const [d] = devicesOf(node);
+    expect(buttonPatches(d, 2, 1, { newPosition: 1 })).toEqual([{ button_2: "press", pushed: 2, last_button: 2 }, { pushed: null }]);
+    expect(buttonPatches(d, 2, 2, { "0": 1 })).toEqual([{ button_2: "hold", held: 2 }, { held: null }]);
+    expect(buttonPatches(d, 2, 4, {})).toEqual([{ button_2: "release", released: 2 }, { released: null }]);
+    expect(buttonPatches(d, 3, 6, { totalNumberOfPressesCounted: 2 })).toEqual([{ double_tapped: 3 }, { double_tapped: null }]);
+    expect(buttonPatches(d, 3, 6, { "1": 1 })).toEqual([]);
+    expect(buttonPatches(d, 9, 1, {})).toEqual([]);
+  });
+
+  it("behind a bridge are one remote per bridged device", () => {
+    const bridged = (ep: number, label: string) => ({ [`${ep}/57/5`]: label, [`${ep}/57/17`]: true, [`${ep}/57/18`]: label, [`${ep}/29/1`]: [29, 59, 57] });
+    const b: NodeData = {
+      node_id: 6, available: true, is_bridge: true,
+      attributes: {
+        "0/40/18": "bridge-1", "1/29/0": [{ "0": 14, "1": 1 }],
+        ...sw(2), ...bridged(2, "Kitchen remote"), ...sw(3), ...bridged(3, "Hall remote"),
+      },
+      endpoint_parents: { "1": 0, "2": 1, "3": 1 },
+    };
+    expect(devicesOf(b).map((d) => [d.name, d.buttons])).toEqual([["Kitchen remote", [2]], ["Hall remote", [3]]]);
+  });
+
+  it("report a latching switch's position as its state", () => {
+    const n: NodeData = { node_id: 7, available: true, is_bridge: false, attributes: { "0/40/3": "Rocker", ...sw(1, 1), "1/59/1": 2 } };
+    const [d] = devicesOf(n);
+    expect(stateOf(n, d)).toMatchObject({ button_1: 2 });
+    expect(buttonPatches(d, 1, 0, { newPosition: 1 })).toEqual([{ button_1: 1, last_button: 1 }]);
   });
 });

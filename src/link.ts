@@ -4,7 +4,7 @@
 // closes, and this connects again (with backoff) as soon as the supervisor
 // says the new one is listening.
 
-import { MatterClient, type MatterNode, type NodesChangedDetail } from "@matter-server/ws-client";
+import { MatterClient, type MatterNode, type MatterNodeEvent, type NodesChangedDetail } from "@matter-server/ws-client";
 import WebSocket from "ws";
 import type { NodeData } from "./devices.js";
 import type { Log } from "./server.js";
@@ -14,6 +14,8 @@ export interface LinkEvents {
   onNodes(nodes: NodeData[]): void;
   onNodeChanged(detail: NodesChangedDetail, node: NodeData | null): void;
   onDown(): void;
+  /** A device reported an event: a button pressed, an alarm sounded. */
+  onEvent?(event: MatterNodeEvent): void;
 }
 
 export function nodeDataOf(node: MatterNode): NodeData {
@@ -70,6 +72,9 @@ export class MatterLink {
     this.connecting = client;
     client.addEventListener("connection_lost", () => this.lost(client));
     client.addEventListener("server_shutdown", () => this.lost(client));
+    client.addNodeEventListener((event) => {
+      if (this.client === client) this.events.onEvent?.(event);
+    });
     client.addEventListener("nodes_changed", (detail) => {
       if (this.client !== client) return;
       const node = client.nodes[String(detail.nodeId)];

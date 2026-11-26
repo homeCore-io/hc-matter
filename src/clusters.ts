@@ -11,6 +11,7 @@ export const Cluster = {
   PowerSource: 47,
   BridgedDeviceBasicInformation: 57,
   BooleanState: 69,
+  Switch: 59,
   ElectricalPowerMeasurement: 144,
   ElectricalEnergyMeasurement: 145,
   DoorLock: 257,
@@ -109,6 +110,7 @@ export const DeviceTypes: Record<number, DeviceTypeInfo> = {
   0x0043: { name: "Water Leak Detector", kind: "water_sensor" },
   0x0044: { name: "Rain Sensor", kind: "rain_sensor" },
   0x002c: { name: "Air Quality Sensor", kind: "air_quality_sensor" },
+  0x000f: { name: "Generic Switch", kind: "remote" },
 };
 
 export function deviceTypeName(id: number): string {

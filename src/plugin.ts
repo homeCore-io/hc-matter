@@ -10,7 +10,8 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Config } from "./config.js";
-import { availableOf, commandFor, devicesOf, devicesTouchedBy, nodeIdOf, stateOf, type Device, type MatterOp, type NodeData } from "./devices.js";
+import { Cluster } from "./clusters.js";
+import { availableOf, buttonPatches, commandFor, devicesOf, devicesTouchedBy, nodeIdOf, stateOf, type Device, type MatterOp, type NodeData } from "./devices.js";
 import { MatterLink, nodeDataOf, parseNodeId } from "./link.js";
 import { ACTIONS, SHARE_WINDOW_SECS, ownFabricIndex, summarize, summarizeFabrics } from "./admin.js";
 import { FIRMWARE_ALERT, FirmwareWatch, firmwareAlert, type FoundUpdate } from "./firmware.js";
@@ -80,7 +81,19 @@ export class MatterPlugin extends PluginBase {
       onNodes: (nodes) => this.onNodes(nodes),
       onNodeChanged: (detail, node) => this.onNodeChanged(detail, node),
       onDown: () => this.onLinkDown(),
+      onEvent: (e) => this.onMatterEvent(e),
     });
+  }
+
+  /** A device's event: a remote's button, as homeCore's remotes report them. */
+  private onMatterEvent(e: { node_id: number | bigint; endpoint_id: number; cluster_id: number; event_id: number; data: unknown }): void {
+    if (e.cluster_id !== Cluster.Switch || !this.mqttUp) return;
+    const nodeId = String(e.node_id);
+    for (const d of this.devices.values()) {
+      if (d.nodeId !== nodeId || !d.buttons?.includes(e.endpoint_id)) continue;
+      for (const patch of buttonPatches(d, e.endpoint_id, e.event_id, e.data)) this.publishStatePartial(d.id, patch);
+      return;
+    }
   }
 
   // ── Logging ────────────────────────────────────────────────────────────────

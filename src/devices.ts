@@ -65,6 +65,8 @@ export interface Device {
   /** The Matter device type it was made from, by name. */
   matterType: string;
   schema: Schema;
+  /** A remote's buttons: the endpoint of button 1, 2, … */
+  buttons?: number[];
 }
 
 export interface CommandPlan {
@@ -214,7 +216,7 @@ export class EndpointView {
 
 // ── Traits: one cluster's (or one idea's) part of a device ──────────────────
 
-interface Ctx { v: EndpointView; kind: string }
+interface Ctx { v: EndpointView; kind: string; buttons?: number[] }
 
 interface Trait {
   applies(c: Ctx): boolean;
@@ -558,6 +560,71 @@ const co2: Trait = {
   state: ({ v }) => ({ co2: co2Ppm(v.get(Cluster.CarbonDioxideConcentrationMeasurement, 0), v.get(Cluster.CarbonDioxideConcentrationMeasurement, 8)) }),
 };
 
+const SWITCH_LATCHING = 1 << 0;
+
+/**
+ * A remote's buttons, as homeCore's remotes have them (hc-caseta's Picos):
+ * button_N goes press, hold, release; pushed / held / released / double_tapped
+ * hold the button's number for an instant, which the ButtonEvent trigger reads;
+ * last_button which was used last. Presses are events (buttonPatches), not
+ * state; a latching switch's position is state.
+ */
+const remote: Trait = {
+  applies: ({ kind, buttons }) => kind === "remote" && !!buttons?.length,
+  schema({ v, buttons }) {
+    const attributes: Record<string, AttrSchema> = {
+      pushed: reading("integer", { display_name: "Pushed" }),
+      held: reading("integer", { display_name: "Held" }),
+      released: reading("integer", { display_name: "Released" }),
+      double_tapped: reading("integer", { display_name: "Double-tapped" }),
+      last_button: reading("integer", { display_name: "Last button" }),
+    };
+    (buttons ?? []).forEach((ep, i) => {
+      const latching = (v.features(Cluster.Switch, ep) & SWITCH_LATCHING) !== 0;
+      attributes[`button_${i + 1}`] = latching
+        ? reading("integer", { display_name: `Button ${i + 1} position` })
+        : reading("enum", { display_name: `Button ${i + 1}`, options: ["press", "hold", "release"].map((value) => ({ value })) });
+    });
+    return { attributes };
+  },
+  state({ v, buttons }) {
+    const s: Record<string, unknown> = {};
+    (buttons ?? []).forEach((ep, i) => {
+      if (v.features(Cluster.Switch, ep) & SWITCH_LATCHING) s[`button_${i + 1}`] = num(v.at(ep, Cluster.Switch, 1));
+    });
+    return s;
+  },
+};
+
+/**
+ * What one Switch event means for a remote: the partial states to publish, in
+ * order (a number is set, then cleared, so the same button twice is two
+ * changes). Empty when the event isn't one of its buttons'.
+ */
+export function buttonPatches(device: Device, endpoint: number, eventId: number, data: unknown): Record<string, unknown>[] {
+  const i = device.buttons?.indexOf(endpoint) ?? -1;
+  if (i < 0) return [];
+  const n = i + 1;
+  const b = `button_${n}`;
+  const d = (data ?? {}) as Record<string, unknown>;
+  const field = (name: string, id: string) => num(d[name] ?? d[id]);
+  switch (eventId) {
+    case 0: // SwitchLatched
+      return [{ [b]: field("newPosition", "0"), last_button: n }];
+    case 1: // InitialPress
+      return [{ [b]: "press", pushed: n, last_button: n }, { pushed: null }];
+    case 2: // LongPress
+      return [{ [b]: "hold", held: n }, { held: null }];
+    case 3: // ShortRelease
+    case 4: // LongRelease
+      return [{ [b]: "release", released: n }, { released: null }];
+    case 6: // MultiPressComplete
+      return field("totalNumberOfPressesCounted", "1") === 2 ? [{ double_tapped: n }, { double_tapped: null }] : [];
+    default:
+      return [];
+  }
+}
+
 const occupancy: Trait = {
   applies: ({ v }) => v.has(Cluster.OccupancySensing),
   schema: () => ({ attributes: { occupied: reading("bool", { states: { when_true: { label: "Occupied" }, when_false: { label: "Clear" } } }) } }),
@@ -658,7 +725,7 @@ const TRAITS: Trait[] = [
   measurement(Cluster.IlluminanceMeasurement, "illuminance", "lux", illuminanceToLux),
   measurement(Cluster.PressureMeasurement, "pressure", "hPa", num),
   co2,
-  occupancy, booleanState, battery, electrical, identify,
+  occupancy, booleanState, battery, electrical, identify, remote,
 ];
 
 /** Clusters some trait reads, so the rest can be listed as not mapped. */
@@ -668,14 +735,14 @@ const MAPPED = new Set<number>([
   Cluster.ElectricalEnergyMeasurement, Cluster.DoorLock, Cluster.WindowCovering, Cluster.Thermostat,
   Cluster.FanControl, Cluster.ColorControl, Cluster.IlluminanceMeasurement, Cluster.TemperatureMeasurement,
   Cluster.PressureMeasurement, Cluster.RelativeHumidityMeasurement, Cluster.OccupancySensing,
-  Cluster.CarbonDioxideConcentrationMeasurement,
+  Cluster.CarbonDioxideConcentrationMeasurement, Cluster.Switch,
   // Plumbing every device has, which says nothing about what it does.
   4 /* Groups */, 5 /* Scenes */, 30 /* Binding */, 98 /* ScenesManagement */,
 ]);
 
 // ── Devices of a node ───────────────────────────────────────────────────────
 
-interface Found { endpoint: number; types: number[]; kind: string; view: EndpointView }
+interface Found { endpoint: number; types: number[]; kind: string; view: EndpointView; buttons?: number[] }
 
 function found(node: NodeData): Found[] {
   const parents = parentsOf(node);
@@ -687,7 +754,24 @@ function found(node: NodeData): Found[] {
     const known = types.find((t) => DeviceTypes[t]?.kind);
     out.push({ endpoint: ep, types, kind: known !== undefined ? DeviceTypes[known].kind! : "matter", view: new EndpointView(node, ep, parents) });
   }
-  return out;
+  // A remote's buttons are an endpoint each; homeCore's remote is one device
+  // with buttons 1, 2, … So the switch endpoints of one device (the node, or
+  // one bridged device) become one remote, on its first button's endpoint.
+  const remotes = new Map<string, Found>();
+  return out.filter((f) => {
+    if (f.kind !== "remote") return true;
+    const owner = f.view.searched.find((ep) => ep !== f.endpoint && f.view.hasAt(ep, Cluster.BridgedDeviceBasicInformation))
+      ?? (f.view.hasAt(f.endpoint, Cluster.BridgedDeviceBasicInformation) ? f.endpoint : "node");
+    const key = String(owner);
+    const first = remotes.get(key);
+    if (first) {
+      first.buttons!.push(f.endpoint);
+      return false;
+    }
+    f.buttons = [f.endpoint];
+    remotes.set(key, f);
+    return true;
+  });
 }
 
 function text(v: unknown): string | null {
@@ -735,7 +819,7 @@ const KIND_WORD: Record<string, string> = {
   light: "light", switch: "switch", lock: "lock", cover: "cover", thermostat: "thermostat", fan: "fan",
   contact_sensor: "contact", occupancy_sensor: "occupancy", temperature_sensor: "temperature",
   humidity_sensor: "humidity", light_sensor: "light level", pressure_sensor: "pressure",
-  water_sensor: "leak", rain_sensor: "rain", air_quality_sensor: "air quality",
+  water_sensor: "leak", rain_sensor: "rain", air_quality_sensor: "air quality", remote: "remote",
 };
 
 /** Every device a node has, with its schema. */
@@ -749,7 +833,7 @@ export function devicesOf(node: NodeData): Device[] {
     const shared = names.filter((n) => n === names[i]).length > 1;
     const word = KIND_WORD[f.kind] ?? deviceTypeName(f.types[0]).toLowerCase();
     const name = shared ? `${names[i]} ${word}` : names[i];
-    const c: Ctx = { v: f.view, kind: f.kind };
+    const c: Ctx = { v: f.view, kind: f.kind, buttons: f.buttons };
     const schema: Schema = { attributes: {}, actions: [] };
     for (const t of TRAITS) {
       if (!t.applies(c)) continue;
@@ -766,6 +850,7 @@ export function devicesOf(node: NodeData): Device[] {
     return {
       id: deviceId(node, f.endpoint, f.view), nodeId, endpoint: f.endpoint, name, kind: f.kind,
       matterType: f.types.map(deviceTypeName).join(", "), schema,
+      ...(f.buttons ? { buttons: f.buttons } : {}),
     };
   });
 }
@@ -778,7 +863,7 @@ function findDevice(node: NodeData, device: Device): Found | undefined {
 export function stateOf(node: NodeData, device: Device): Record<string, unknown> {
   const f = findDevice(node, device);
   if (!f) return {};
-  const c: Ctx = { v: f.view, kind: f.kind };
+  const c: Ctx = { v: f.view, kind: f.kind, buttons: f.buttons };
   const s: Record<string, unknown> = {};
   for (const t of TRAITS) if (t.applies(c)) Object.assign(s, t.state(c));
   s.matter_device_type = device.matterType;

@@ -39,6 +39,8 @@ import { OnOffPlugInUnitDevice } from "@matter/main/devices/on-off-plug-in-unit"
 import { WaterLeakDetectorDevice } from "@matter/main/devices/water-leak-detector";
 import { OccupancySensorDevice } from "@matter/main/devices/occupancy-sensor";
 import { LightSensorDevice } from "@matter/main/devices/light-sensor";
+import { GenericSwitchDevice } from "@matter/main/devices/generic-switch";
+import { SwitchServer } from "@matter/main/behaviors/switch";
 import { createInterface } from "node:readline";
 
 const args = Object.fromEntries(
@@ -186,6 +188,14 @@ const devices = {
     { ...bridged("fan", "Ceiling Fan"), fanControl: { fanMode: 0, fanModeSequence: 0, percentSetting: 0, percentCurrent: 0 } },
   ),
 };
+// A one-button remote: presses, long presses and double presses, from its
+// position as a real button moves it (matter.js makes the events).
+devices.remote = new Endpoint(
+  GenericSwitchDevice.with(BridgedDeviceBasicInformationServer,
+    SwitchServer.with("MomentarySwitch", "MomentarySwitchRelease", "MomentarySwitchLongPress", "MomentarySwitchMultiPress")),
+  { ...bridged("remote", "Bedside Button"),
+    switch: { numberOfPositions: 2, currentPosition: 0, multiPressMax: 2, longPressDelay: 800, multiPressDelay: 300, debounceDelay: 0 } },
+);
 for (const d of Object.values(devices)) await aggregator.add(d);
 
 // Readings a test can change while the stand-in runs.
@@ -197,6 +207,14 @@ const setters = {
   humidity: (v) => devices.humidity.set({ relativeHumidityMeasurement: { measuredValue: Math.round(v.humidity * 100) } }),
   battery: (v) => devices.contact.set({ powerSource: { batPercentRemaining: Math.round(v.pct * 2) } }),
   reachable: (v) => devices[v.which].set({ bridgedDeviceBasicInformation: { reachable: !!v.reachable } }),
+  remote: async (v) => {
+    const at = (p) => devices.remote.set({ switch: { rawPosition: p } });
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const press = async (ms) => { await at(1); await wait(ms); await at(0); };
+    if (v.press === "long") await press(1200);
+    else if (v.press === "double") { await press(80); await wait(120); await press(80); }
+    else await press(80);
+  },
 };
 createInterface({ input: process.stdin }).on("line", async (line) => {
   try {
