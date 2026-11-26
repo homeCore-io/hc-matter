@@ -155,19 +155,26 @@ export class MatterServerProcess {
    * mid-write could lose every pairing. If this process goes first, the
    * launcher sees its pipe close and stops the server itself.
    */
-  async stop(waitMs = 800): Promise<void> {
+  async stop(waitMs = 800): Promise<boolean> {
     this.stopping = true;
     if (this.restartTimer) clearTimeout(this.restartTimer);
     const child = this.child;
-    if (!child || child.exitCode !== null) return;
-    await new Promise<void>((resolve) => {
-      const give = setTimeout(resolve, waitMs);
+    if (!child || child.exitCode !== null) return true;
+    return new Promise<boolean>((resolve) => {
+      const give = setTimeout(() => resolve(false), waitMs);
       child.once("exit", () => {
         clearTimeout(give);
-        resolve();
+        resolve(true);
       });
       child.stdin?.end();
       child.kill("SIGTERM");
     });
+  }
+
+  /** Start it again after stop (a backup pauses it). */
+  resume(): void {
+    this.stopping = false;
+    this.backoff = MIN_BACKOFF_MS;
+    if (!this.child) this.start();
   }
 }

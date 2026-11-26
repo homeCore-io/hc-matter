@@ -135,6 +135,24 @@ The bridge's actions: `bridge_status`, `bridge_enable` (`on`),
 `bridge_devices`, `bridge_share` (`device_id`, `shared`,
 `confirm_security`) and `bridge_reset`.
 
+## Backing up the pairings
+
+Every pairing (the devices paired here, and the apps the bridge is paired
+with) is kept in the plugin's data folder on the runtime, which homeCore's own
+backup doesn't hold. Lose it and every device needs pairing again.
+
+- **Download a backup** on the plugin's page (or the `backup` action, which
+  streams it) makes one file, `hc-matter-backup-<date>.json.gz`: the
+  controller's and the bridge's storage and the bridge's choices, without
+  caches that are fetched again. Matter pauses for a few seconds while it is
+  copied. Keep it off the house's server.
+- **Restore from a backup** (`restore_backup`, sent the file as an upload;
+  needs SDK 0.4.7 and homeCore 0.1.87 or later) checks the file, moves what is
+  there now to `data/before-restore-<time>/` (never deleted by the plugin),
+  writes the backup and restarts the plugin.
+- A notice says so while the pairings have never been backed up, or some are
+  newer than the last backup.
+
 ## Devices
 
 Each Matter endpoint that has a device type becomes one homeCore device. Its id

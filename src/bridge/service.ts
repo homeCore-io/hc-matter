@@ -170,6 +170,21 @@ export class BridgeService {
     await this.bridge?.stop();
   }
 
+  /** Stop the bridge for a moment (a backup copies its storage), keeping it on. */
+  pause(): Promise<void> {
+    return this.serial(async () => {
+      this.home.pause();
+      await this.bridge?.stop();
+      this.bridge = null;
+    });
+  }
+
+  resume(): Promise<void> {
+    return this.serial(async () => {
+      if (this.enabled) await this.run();
+    });
+  }
+
   /** homeCore's key for this run; reminted every start. */
   setAccess(url: string, key: string): void {
     this.access = { url, key };

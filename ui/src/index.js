@@ -4,7 +4,7 @@
 // Everything goes through the plugin's own actions (src/admin.ts in the
 // plugin) via `host` (core/sdk/ui/index.d.ts): nothing here talks Matter.
 
-import { filterCandidates, formatManualCode, looksLikeCode, pairingView, qrSvg, timeLeft, updateWords, vendorName } from './lib.js';
+import { filterCandidates, joinPieces, sha256Hex, formatManualCode, looksLikeCode, pairingView, qrSvg, timeLeft, updateWords, vendorName } from './lib.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
@@ -146,6 +146,16 @@ class MatterPage extends HTMLElement {
 					</div>
 				</section>
 				<section class="hc-card">
+					<h3>Backup</h3>
+					<p class="quiet">Every pairing (the devices paired here, and the apps the bridge is paired with) is kept on the runtime, not in homeCore's backup. Keep a backup file somewhere safe: it restores them all. Matter pauses for a few seconds while it is made.</p>
+					<div class="hc-row">
+						<button class="hc-pill" id="backup">Download a backup</button>
+						<label class="hc-pill" for="restore-file" style="display:inline-flex;align-items:center;cursor:pointer">Restore from a backup…</label>
+						<input id="restore-file" type="file" accept=".gz,application/gzip" hidden />
+					</div>
+					<p class="quiet" id="backup-note"></p>
+				</section>
+				<section class="hc-card">
 					<details>
 						<summary>Networks for new devices</summary>
 						<p class="quiet">Only for a device that is not on your network yet. A device shared from another app, or already on Wi-Fi or Thread, needs neither.</p>
@@ -178,6 +188,12 @@ class MatterPage extends HTMLElement {
 			this.#saveNetwork('set_thread_dataset', { dataset: f.dataset.value.trim() }, f, 'Thread dataset saved.');
 		});
 		$('nodes').addEventListener('click', (e) => this.#onNodeClick(e));
+		$('backup').addEventListener('click', () => this.#backup());
+		$('restore-file').addEventListener('change', (e) => {
+			const f = e.target.files?.[0];
+			e.target.value = '';
+			if (f) this.#restore(f);
+		});
 		$('bridge-head').addEventListener('click', (e) => this.#onBridgeClick(e));
 		$('bridge-rows').addEventListener('click', (e) => this.#onBridgeClick(e));
 		$('bridge-find').addEventListener('input', () => this.#drawBridgeRows());
@@ -446,6 +462,57 @@ class MatterPage extends HTMLElement {
 			if (end.stage === 'complete') this.shadowRoot.querySelector('#pair-form').reset();
 			this.#refresh();
 		});
+	}
+
+	#backupNote(text, error = false) {
+		const n = this.shadowRoot.getElementById('backup-note');
+		n.textContent = text;
+		n.className = error ? 'error' : 'quiet';
+	}
+
+	async #backup() {
+		const h = this.#host;
+		if (typeof h.stream !== 'function') return this.#backupNote('Backups need a newer homeCore app.', true);
+		const btn = this.shadowRoot.getElementById('backup');
+		btn.disabled = true;
+		const events = [];
+		const run = h.stream('backup', {}, (e) => {
+			events.push(e);
+			if (e.stage === 'progress' && e.message) this.#backupNote(`${e.message}…`);
+		});
+		const end = await run.done;
+		btn.disabled = false;
+		if (end.stage !== 'complete') return this.#backupNote(end.message || 'The backup failed.', true);
+		const bytes = joinPieces(events);
+		const info = end.data ?? {};
+		if (!bytes) return this.#backupNote('Part of the backup went missing on the way; try again.', true);
+		if (info.sha256 && (await sha256Hex(bytes)) !== info.sha256) return this.#backupNote('The backup arrived damaged; try again.', true);
+		const url = URL.createObjectURL(new Blob([bytes], { type: 'application/gzip' }));
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = info.name || 'hc-matter-backup.json.gz';
+		this.shadowRoot.appendChild(a);
+		a.click();
+		a.remove();
+		setTimeout(() => URL.revokeObjectURL(url), 10_000);
+		this.#backupNote(`Saved ${a.download} (${Math.ceil(bytes.length / 1024)} KB). Keep it somewhere other than this house's server.`);
+		this.#refresh();
+	}
+
+	async #restore(file) {
+		const h = this.#host;
+		const ok = await h.ui.confirm({
+			title: 'Restore the pairings from this backup?',
+			body: `${file.name}: the Matter pairings are replaced by the ones in it, and the plugin restarts. What is there now is kept aside on the runtime, not deleted. Devices paired since the backup was made will need pairing again.`,
+			go: 'Restore',
+			danger: true,
+		});
+		if (!ok) return;
+		this.#backupNote('Restoring…');
+		const r = await h.upload('restore_backup', file, {}, file.name);
+		if (!r.ok) return this.#backupNote(r.error, true);
+		this.#backupNote(`Restored the backup of ${r.data.restored}. The plugin is restarting; this page catches up in a few seconds.`);
+		setTimeout(() => this.#refresh(), 15_000);
 	}
 
 	async #saveNetwork(action, params, form, said) {
