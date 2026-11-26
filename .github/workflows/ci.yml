@@ -1,0 +1,58 @@
+# CI for hc-matter.
+#
+# `npm ci`, so the committed lock is what is tested. The second job installs
+# the way the release artifact does (no dev, no optional dependencies, no
+# install scripts) and starts matter-server's command line from it: an optional
+# dependency it cannot run without (@matter/nodejs, optional under
+# @matter/main) is exactly what that install drops, and nothing else would see it.
+name: CI
+
+on:
+  push:
+    branches: [main, develop, redesign]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: typecheck, test, build (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The release is built for 24; 26 is the newest the registry offers.
+        node-version: ["24", "26"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  runtime-install:
+    name: the artifact's install runs matter-server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - run: npm ci --omit=dev --omit=optional --ignore-scripts --no-audit --no-fund
+      - name: No native code
+        run: |
+          found="$(find node_modules \( -name '*.node' -o -name binding.gyp \) | sort)"
+          if [ -n "$found" ]; then echo "::error::native code would tie the artifact to one CPU: $found"; exit 1; fi
+      - name: matter-server starts from it
+        run: node node_modules/matter-server/dist/esm/bin.js --version
