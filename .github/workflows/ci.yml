@@ -57,3 +57,28 @@ jobs:
           if [ -n "$found" ]; then echo "::error::native code would tie the artifact to one CPU: $found"; exit 1; fi
       - name: matter-server starts from it
         run: node node_modules/matter-server/dist/esm/bin.js --version
+
+  # The plugin end to end, as homeCore drives it: the stand-in, the built
+  # plugin and a scratch broker on the runner (an isolated VM, so its mDNS
+  # reaches nothing real). Pairs through the pair action, then a command, a
+  # button press and an alarm (tests/e2e/pair.mjs).
+  e2e:
+    name: pairs the stand-in and drives it
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - name: Start a scratch broker
+        run: |
+          docker run -d --name broker -p 1883:1883 eclipse-mosquitto:2 \
+            sh -c 'printf "listener 1883\nallow_anonymous true\n" > /m.conf && mosquitto -c /m.conf'
+          for i in $(seq 1 30); do docker exec broker sh -c 'nc -z 127.0.0.1 1883' && break; sleep 1; done
+      - run: node tests/e2e/pair.mjs
+        env:
+          BROKER_HOST: 127.0.0.1
+          BROKER_PORT: "1883"
