@@ -1,21 +1,9 @@
 node_modules/
+out/
 dist/
 *.log
-*.log.*
 .DS_Store
-.env
-.env.local
-*.swp
-*.swo
-*~
-.vscode/
-.idea/
-coverage/
-build/
-.turbo/
-pnpm-lock.yaml
-package-lock.json
-data/matter/fabric_store.json
-data/matter/fabric_store.corrupt.*
-data/matter/backups/
+# A matter-server run by hand keeps its fabric here: never commit it.
+data/
 logs/
+*.tgz

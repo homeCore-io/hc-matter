@@ -1,0 +1,14 @@
+{
+  "name": "hc-matter-ui",
+  "private": true,
+  "version": "0.0.0",
+  "description": "hc-matter's own screen: pairing, sharing and the paired devices. Plain custom elements, no framework.",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "qrcode-generator": "2.0.4"
+  }
+}

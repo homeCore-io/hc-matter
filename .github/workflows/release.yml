@@ -1,0 +1,25 @@
+# Tag `v<version>` (the package.json version) to release hc-matter
+# (plugin.matter) as a homeCore Node.js plugin.
+#
+# The build and the release gate live in hc-scripts: one artifact holding the
+# plugin and every dependency (matter-server included), installed from the
+# lock with no install scripts, refused if anything in it is native, and
+# started against a broker before anything is published. Pure JavaScript, so
+# the same file is listed for x86_64 and aarch64.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: homeCore-io/hc-scripts/.github/workflows/node-release.yml@main
+    with:
+      plugin_dir: .
+      node_version: '24'
+    secrets: inherit
