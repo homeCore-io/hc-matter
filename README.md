@@ -94,6 +94,45 @@ Each of these is also a plugin action, for automations, hc-mcp or the API:
 | `set_wifi` | `ssid`, `password` | |
 | `set_thread_dataset` | `dataset` (hex) | |
 
+## Sharing homeCore devices with other apps (the bridge)
+
+The other way round: homeCore's own devices, from any plugin, shown to Apple
+Home, Google Home, Alexa or any Matter app as one Matter bridge. Lights,
+switches, locks, blinds and covers, thermostats, fans, and contact,
+occupancy, temperature, humidity, leak and light sensors.
+
+- **Off until you turn it on**, under *Share with other apps* on the plugin's
+  page. It then shows a QR code and a code to pair "homeCore" in the other
+  app. The bridge is not a certified Matter product, so the app may warn
+  before adding it. To add it to a second app, share it from the first, as
+  for any Matter device.
+- **Only the devices you choose.** Nothing is shared until it is ticked, and a
+  device added to homeCore later stays private until then. Devices that came
+  from Matter are never offered: pair those in the other app directly.
+- **Locks, and covers that are garage doors, gates or doors** (anything
+  homeCore counts as security and that can be commanded), can be shared only
+  after a warning: the other app's users and its voice assistant could then
+  unlock or open them, without homeCore asking.
+- Changes go both ways: the other app's commands become homeCore commands
+  (the plugin's own API key, `devices:command`), and homeCore's state shows
+  in the other app. A dimmer's fade is sent as one command.
+- **A thermostat is what it is in homeCore**: heating, cooling or both (with
+  auto only when it has both), its own setpoint limits, and only the modes it
+  takes. A single `setpoint` (NuHeat) shows as heating. A fan's on and speed
+  show as Matter's fan mode (off, low, medium, high) and percentage.
+- A change the device can't take (a mode it has no way to set) is not sent,
+  and the other app is shown homeCore's state again within a second.
+- **Reset** unpairs the bridge from every app and gives it a new code; what it
+  shares stays chosen. Updates keep its pairing.
+
+It runs in the plugin, on UDP port 5541 (the controller has 5540), and keeps
+its pairing in `data/bridge/` and its choices in `data/bridge.json`. Its
+pairing code is never written to the log.
+
+The bridge's actions: `bridge_status`, `bridge_enable` (`on`),
+`bridge_devices`, `bridge_share` (`device_id`, `shared`,
+`confirm_security`) and `bridge_reset`.
+
 ## Devices
 
 Each Matter endpoint that has a device type becomes one homeCore device. Its id
@@ -142,6 +181,15 @@ that a device refuses changes nothing.
 - **Some devices are not answering.**
 - **No devices are paired yet.**
 - **Test devices are allowed** (`allow_test_devices` is on).
+
+## Alerts
+
+- **Firmware update available** (`firmware_update`, off until you turn it
+  on): a newer firmware is published for a paired device. It is on the node's
+  first homeCore device, names the node and the version, and its **Update…**
+  button installs it after a confirm. The plugin asks ten minutes after it
+  starts and then twice a day; the alert clears when the device runs that
+  version. Needs `firmware_updates` on.
 
 ## Settings
 

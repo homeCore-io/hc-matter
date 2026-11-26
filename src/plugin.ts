@@ -13,6 +13,8 @@ import type { Config } from "./config.js";
 import { availableOf, commandFor, devicesOf, devicesTouchedBy, nodeIdOf, stateOf, type Device, type MatterOp, type NodeData } from "./devices.js";
 import { MatterLink, nodeDataOf, parseNodeId } from "./link.js";
 import { ACTIONS, SHARE_WINDOW_SECS, ownFabricIndex, summarize, summarizeFabrics } from "./admin.js";
+import { FIRMWARE_ALERT, FirmwareWatch, firmwareAlert, type FoundUpdate } from "./firmware.js";
+import { BRIDGE_ACTIONS, BRIDGE_SCOPES, BridgeService } from "./bridge/service.js";
 import { MatterServerProcess, type Log, type LogLevel } from "./server.js";
 
 /** State that follows a command within this long is reported as its result. */
@@ -34,6 +36,12 @@ export class MatterPlugin extends PluginBase {
   private serverProblem: PluginNotice | null = null;
   /** Nodes are known only once the link has listed them; until then reconcile nothing. */
   private synced = false;
+  /** Firmware found for a node, by node id, and the device its alert is on. */
+  private readonly updates = new Map<string, FoundUpdate>();
+  private readonly alertedOn = new Map<string, string>();
+  private readonly firmware = new FirmwareWatch(() => this.checkAllFirmware());
+  /** homeCore's devices shown to other Matter apps. */
+  private readonly bridge: BridgeService;
 
   constructor(private readonly config: Config, private readonly version: string) {
     super({
@@ -43,6 +51,7 @@ export class MatterPlugin extends PluginBase {
       password: config.homecore.password,
     });
     const log: Log = (level, message) => this.log(level, message);
+    this.bridge = new BridgeService(dirname(config.matter.storageDir), config.homecore.pluginId, log);
     this.server = new MatterServerProcess(config.matter, log, {
       onReady: () => {
         this.serverProblem = null;
@@ -89,20 +98,31 @@ export class MatterPlugin extends PluginBase {
     this.enableDevicePersistence(`${this.config.matter.storageDir}/../.published-device-ids.json`);
     this.server.start();
     this.run();
+    this.bridge.start().catch((e) => this.log("error", `bridge: could not start: ${(e as Error).message}`));
   }
 
   onConnect(): void {
     this.mqttUp = true;
-    this.enableManagement({ version: this.version, configPath: this.config.path, capabilities: new Capabilities(ACTIONS) });
+    this.enableManagement({ version: this.version, configPath: this.config.path, capabilities: new Capabilities([...ACTIONS, ...BRIDGE_ACTIONS], {
+      alertKinds: [FIRMWARE_ALERT],
+      // The bridge reads homeCore's devices and commands them for other apps.
+      apiScopes: BRIDGE_SCOPES,
+    }) });
     this.publishPluginStatus("active");
     // A reconnect: say every device again (core may have restarted).
     for (const d of this.devices.values()) this.announce(d, true);
     this.refreshNotices();
   }
 
+  onApiAccess(url: string, key: string): void {
+    this.bridge.setAccess(url, key);
+  }
+
   async onStop(): Promise<void> {
+    this.firmware.stop();
     this.link.close();
-    await this.server.stop();
+    // Together: the SDK gives this a second in all.
+    await Promise.all([this.bridge.stop().catch(() => {}), this.server.stop()]);
   }
 
   // ── Nodes in, devices out ─────────────────────────────────────────────────
@@ -116,6 +136,8 @@ export class MatterPlugin extends PluginBase {
     for (const id of [...this.devices.keys()]) if (!live.has(id)) this.forget(id);
     if (this.mqttUp) this.reconcileDevices(live);
     this.synced = true;
+    if (this.config.matter.firmwareUpdates) this.firmware.start();
+    for (const id of this.updates.keys()) this.refreshFirmwareAlert(id);
     this.log("info", `${nodes.length} Matter node(s), ${live.size} device(s)`);
     this.refreshNotices();
   }
@@ -190,6 +212,8 @@ export class MatterPlugin extends PluginBase {
     const nodeId = String(detail.nodeId);
     if (detail.reason === "node_removed" || !node) {
       this.nodes.delete(nodeId);
+      this.updates.delete(nodeId);
+      this.refreshFirmwareAlert(nodeId);
       for (const [id, d] of [...this.devices]) if (d.nodeId === nodeId) this.forget(id);
       this.log("info", `Matter node ${nodeId} was removed`);
       this.refreshNotices();
@@ -199,6 +223,8 @@ export class MatterPlugin extends PluginBase {
     if (detail.reason === "attribute_updated") {
       const mine = [...this.devices.values()].filter((d) => d.nodeId === nodeId);
       // A changed descriptor means the node's shape changed (a bridge added a device).
+      // Its software version changed: an update was installed.
+      if (detail.attributeKey === "0/40/9") this.refreshFirmwareAlert(nodeId);
       if (/^\d+\/29\//.test(detail.attributeKey)) {
         this.syncNode(node);
         return;
@@ -208,6 +234,7 @@ export class MatterPlugin extends PluginBase {
     }
     // node_added, node_updated (an interview, availability): its whole shape.
     this.syncNode(node);
+    this.refreshFirmwareAlert(nodeId);
     this.refreshNotices();
   }
 
@@ -285,6 +312,8 @@ export class MatterPlugin extends PluginBase {
     if (action === "pair" && ctx) return this.pair(String(params.code ?? ""), ctx, caller);
     if (action === "remove_node") return this.removeNode(String(params.node_id ?? ""), caller);
     if (action === "nodes") return { nodes: [...this.nodes.values()].map(summarize) };
+    const bridged = await this.bridge.action(action, params, caller?.username ?? "someone");
+    if (bridged !== undefined) return bridged;
     if (action === "server_status") return this.serverStatus();
     const who = caller?.username ?? "someone";
     if (action === "share_node") {
@@ -322,6 +351,7 @@ export class MatterPlugin extends PluginBase {
     if (action === "check_update") {
       const { client, nodeId } = this.target(params);
       const v = await client.checkNodeUpdate(nodeId);
+      this.recordUpdate(String(nodeId), v);
       return v
         ? { available: true, version: v.software_version, version_string: v.software_version_string, release_notes_url: v.release_notes_url ?? null }
         : { available: false };
@@ -351,6 +381,46 @@ export class MatterPlugin extends PluginBase {
       return { thread_credentials_set: true };
     }
     return null;
+  }
+
+  /** Ask about every node that answers, one at a time. */
+  private async checkAllFirmware(): Promise<void> {
+    const client = this.link.client;
+    if (!client || !this.config.matter.firmwareUpdates) return;
+    let found = 0;
+    for (const [nodeId, node] of [...this.nodes]) {
+      if (!node.available) continue;
+      try {
+        const v = await client.checkNodeUpdate(parseNodeId(nodeId));
+        this.recordUpdate(nodeId, v);
+        if (v) found += 1;
+      } catch (e) {
+        this.log("debug", `firmware check for Matter node ${nodeId} failed: ${(e as Error).message}`);
+      }
+    }
+    this.log("info", `firmware checked for ${this.nodes.size} Matter node(s); ${found} with an update`);
+  }
+
+  private recordUpdate(nodeId: string, v: { software_version: number; software_version_string: string } | null): void {
+    if (v) this.updates.set(nodeId, { version: v.software_version, version_string: v.software_version_string });
+    else this.updates.delete(nodeId);
+    this.refreshFirmwareAlert(nodeId);
+  }
+
+  /** Say what is known about a node's firmware: on its first device, or nowhere. */
+  private refreshFirmwareAlert(nodeId: string): void {
+    if (!this.mqttUp) return;
+    const node = this.nodes.get(nodeId);
+    const said = node ? firmwareAlert(node, this.updates.get(nodeId) ?? null) : null;
+    if (!said) this.updates.delete(nodeId);
+    const before = this.alertedOn.get(nodeId);
+    if (before && before !== said?.deviceId) this.setAlerts(before, []);
+    if (said) {
+      this.setAlerts(said.deviceId, [said.alert]);
+      this.alertedOn.set(nodeId, said.deviceId);
+    } else {
+      this.alertedOn.delete(nodeId);
+    }
   }
 
   private requireClient(): NonNullable<MatterLink["client"]> {
