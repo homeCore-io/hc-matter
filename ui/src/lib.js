@@ -84,3 +84,17 @@ export function updateWords(node) {
 		rolling_back: 'Rolling back firmware',
 	}[s] ?? `Firmware: ${s.replace(/_/g, ' ')}`;
 }
+
+/** The ecosystems people recognise, by Matter vendor id. */
+const VENDORS = { 0x1349: 'Apple Home', 0x6006: 'Google Home', 0x1217: 'Amazon Alexa', 0x110a: 'SmartThings', 0x134b: 'Home Assistant', 0xfff1: 'A test controller' };
+
+export function vendorName(id, label) {
+	return VENDORS[id] ?? (label ? label : `Matter app (vendor ${id})`);
+}
+
+/** The bridge's devices, filtered by what someone typed: name or type, any case. */
+export function filterCandidates(list, text) {
+	const t = String(text ?? '').trim().toLowerCase();
+	if (!t) return list;
+	return list.filter((c) => c.name.toLowerCase().includes(t) || (c.type ?? '').replace(/_/g, ' ').includes(t));
+}

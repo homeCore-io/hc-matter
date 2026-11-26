@@ -14,6 +14,7 @@ import { availableOf, commandFor, devicesOf, devicesTouchedBy, nodeIdOf, stateOf
 import { MatterLink, nodeDataOf, parseNodeId } from "./link.js";
 import { ACTIONS, SHARE_WINDOW_SECS, ownFabricIndex, summarize, summarizeFabrics } from "./admin.js";
 import { FIRMWARE_ALERT, FirmwareWatch, firmwareAlert, type FoundUpdate } from "./firmware.js";
+import { BRIDGE_ACTIONS, BRIDGE_SCOPES, BridgeService } from "./bridge/service.js";
 import { MatterServerProcess, type Log, type LogLevel } from "./server.js";
 
 /** State that follows a command within this long is reported as its result. */
@@ -39,6 +40,8 @@ export class MatterPlugin extends PluginBase {
   private readonly updates = new Map<string, FoundUpdate>();
   private readonly alertedOn = new Map<string, string>();
   private readonly firmware = new FirmwareWatch(() => this.checkAllFirmware());
+  /** homeCore's devices shown to other Matter apps. */
+  private readonly bridge: BridgeService;
 
   constructor(private readonly config: Config, private readonly version: string) {
     super({
@@ -48,6 +51,7 @@ export class MatterPlugin extends PluginBase {
       password: config.homecore.password,
     });
     const log: Log = (level, message) => this.log(level, message);
+    this.bridge = new BridgeService(dirname(config.matter.storageDir), config.homecore.pluginId, log);
     this.server = new MatterServerProcess(config.matter, log, {
       onReady: () => {
         this.serverProblem = null;
@@ -94,21 +98,31 @@ export class MatterPlugin extends PluginBase {
     this.enableDevicePersistence(`${this.config.matter.storageDir}/../.published-device-ids.json`);
     this.server.start();
     this.run();
+    this.bridge.start().catch((e) => this.log("error", `bridge: could not start: ${(e as Error).message}`));
   }
 
   onConnect(): void {
     this.mqttUp = true;
-    this.enableManagement({ version: this.version, configPath: this.config.path, capabilities: new Capabilities(ACTIONS, { alertKinds: [FIRMWARE_ALERT] }) });
+    this.enableManagement({ version: this.version, configPath: this.config.path, capabilities: new Capabilities([...ACTIONS, ...BRIDGE_ACTIONS], {
+      alertKinds: [FIRMWARE_ALERT],
+      // The bridge reads homeCore's devices and commands them for other apps.
+      apiScopes: BRIDGE_SCOPES,
+    }) });
     this.publishPluginStatus("active");
     // A reconnect: say every device again (core may have restarted).
     for (const d of this.devices.values()) this.announce(d, true);
     this.refreshNotices();
   }
 
+  onApiAccess(url: string, key: string): void {
+    this.bridge.setAccess(url, key);
+  }
+
   async onStop(): Promise<void> {
     this.firmware.stop();
     this.link.close();
-    await this.server.stop();
+    // Together: the SDK gives this a second in all.
+    await Promise.all([this.bridge.stop().catch(() => {}), this.server.stop()]);
   }
 
   // ── Nodes in, devices out ─────────────────────────────────────────────────
@@ -298,6 +312,8 @@ export class MatterPlugin extends PluginBase {
     if (action === "pair" && ctx) return this.pair(String(params.code ?? ""), ctx, caller);
     if (action === "remove_node") return this.removeNode(String(params.node_id ?? ""), caller);
     if (action === "nodes") return { nodes: [...this.nodes.values()].map(summarize) };
+    const bridged = await this.bridge.action(action, params, caller?.username ?? "someone");
+    if (bridged !== undefined) return bridged;
     if (action === "server_status") return this.serverStatus();
     const who = caller?.username ?? "someone";
     if (action === "share_node") {

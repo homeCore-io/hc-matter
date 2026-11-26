@@ -81,6 +81,7 @@ declare module "homecore-plugin-sdk" {
     onCommand(deviceId: string, payload: Record<string, unknown>): void;
     onAction(action: string, params: Record<string, unknown>, ctx: StreamContext | null, caller?: Caller | null): unknown;
     onLogLevel(level: string): void;
+    onApiAccess(url: string, key: string, scopes: string[]): void;
     onStop(): void | Promise<void>;
   }
 }

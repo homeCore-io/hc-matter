@@ -41,3 +41,18 @@ test('counts down a share window, and words a firmware update', () => {
 	assert.equal(updateWords({ update_state: 'downloading', update_percent: 40 }), 'Downloading firmware 40%');
 	assert.equal(updateWords({ update_state: 'idle' }), null);
 });
+
+import { filterCandidates, vendorName } from '../dist/lib.js';
+
+test('names the apps a bridge is paired with', () => {
+	assert.equal(vendorName(0x1349), 'Apple Home');
+	assert.equal(vendorName(4242, 'Kitchen hub'), 'Kitchen hub');
+	assert.equal(vendorName(4242), 'Matter app (vendor 4242)');
+});
+
+test('filters the devices to share by name or type', () => {
+	const list = [{ name: 'Desk Lamp', type: 'light' }, { name: 'Back door', type: 'lock' }, { name: 'Hall', type: 'contact_sensor' }];
+	assert.deepEqual(filterCandidates(list, 'LAMP').map((c) => c.name), ['Desk Lamp']);
+	assert.deepEqual(filterCandidates(list, 'contact').map((c) => c.name), ['Hall']);
+	assert.equal(filterCandidates(list, ' ').length, 3);
+});

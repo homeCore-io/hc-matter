@@ -4,7 +4,7 @@
 // Everything goes through the plugin's own actions (src/admin.ts in the
 // plugin) via `host` (core/sdk/ui/index.d.ts): nothing here talks Matter.
 
-import { formatManualCode, looksLikeCode, pairingView, qrSvg, timeLeft, updateWords } from './lib.js';
+import { filterCandidates, formatManualCode, looksLikeCode, pairingView, qrSvg, timeLeft, updateWords, vendorName } from './lib.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
@@ -45,6 +45,10 @@ class MatterPage extends HTMLElement {
 	#busy = new Set();
 	#tick;
 	#refreshing = null;
+	#bridge = null;
+	#candidates = [];
+	#bridgeNote = null;
+	#bridgeBusy = false;
 
 	constructor() {
 		super();
@@ -85,6 +89,23 @@ class MatterPage extends HTMLElement {
 		if (nodes.ok) this.#nodes = nodes.data.nodes ?? [];
 		this.#drawStatus();
 		this.#drawNodes();
+		await this.#refreshBridge();
+	}
+
+	async #refreshBridge() {
+		const h = this.#host;
+		const b = await h.action('bridge_status');
+		this.#bridge = b.ok ? b.data : { error: b.error };
+		if (this.#bridge?.enabled) {
+			const c = await h.action('bridge_devices');
+			if (c.ok) {
+				this.#candidates = c.data.devices ?? [];
+				this.#bridgeNote = c.data.note ?? null;
+			}
+		} else {
+			this.#candidates = [];
+		}
+		this.#drawBridge();
 	}
 
 	#refreshSoon() {
@@ -114,6 +135,15 @@ class MatterPage extends HTMLElement {
 				<section class="hc-card">
 					<div class="hc-head"><h3>Paired devices</h3><span class="hc-quiet" id="count"></span></div>
 					<div id="nodes"></div>
+				</section>
+				<section class="hc-card">
+					<h3>Share with other apps</h3>
+					<p class="quiet">Show homeCore devices to Apple Home, Google Home, Alexa or another Matter app, through one bridge they pair. Only the devices you choose.</p>
+					<div id="bridge-head"></div>
+					<div id="bridge-list" hidden>
+						<label class="hc-field"><span class="hc-label">Find a device</span><input id="bridge-find" autocomplete="off" placeholder="Name or kind" /></label>
+						<div id="bridge-rows"></div>
+					</div>
 				</section>
 				<section class="hc-card">
 					<details>
@@ -148,6 +178,9 @@ class MatterPage extends HTMLElement {
 			this.#saveNetwork('set_thread_dataset', { dataset: f.dataset.value.trim() }, f, 'Thread dataset saved.');
 		});
 		$('nodes').addEventListener('click', (e) => this.#onNodeClick(e));
+		$('bridge-head').addEventListener('click', (e) => this.#onBridgeClick(e));
+		$('bridge-rows').addEventListener('click', (e) => this.#onBridgeClick(e));
+		$('bridge-find').addEventListener('input', () => this.#drawBridgeRows());
 	}
 
 	#drawStatus() {
@@ -260,6 +293,118 @@ class MatterPage extends HTMLElement {
 			</tr>`)
 			.join('');
 		return `<table class="hc-table"><thead><tr><th>Paired with</th><th>Label</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+	}
+
+	#drawBridge() {
+		const head = this.shadowRoot.getElementById('bridge-head');
+		const list = this.shadowRoot.getElementById('bridge-list');
+		if (!head) return;
+		const b = this.#bridge;
+		const busy = this.#bridgeBusy ? 'disabled' : '';
+		if (!b || b.error) {
+			head.innerHTML = `<p class="error">${esc(b?.error ?? 'The bridge did not answer.')}</p>`;
+			list.hidden = true;
+			return;
+		}
+		if (!b.enabled) {
+			head.innerHTML = `<button class="hc-pill go" data-bridge="on" ${busy}>Turn on</button>`;
+			list.hidden = true;
+			return;
+		}
+		let pairing;
+		if (!b.running) {
+			pairing = '<p class="quiet">Starting…</p>';
+		} else if (!b.commissioned && b.qr_code) {
+			pairing = `<div class="share">${qrSvg(b.qr_code, { size: 168 })}<div>
+				<p><strong>Pair homeCore in your other app</strong></p>
+				<p class="quiet">Add a Matter device there and scan this code, or type:</p>
+				<p class="code">${esc(formatManualCode(b.manual_code))}</p>
+				<p class="quiet">It is not a certified Matter product, so the app may warn you before adding it.</p>
+			</div></div>`;
+		} else {
+			const apps = (b.fabrics ?? []).map((f) => `<span class="hc-tag good">${esc(vendorName(f.vendor_id, f.label))}</span>`).join(' ');
+			pairing = `<div class="hc-row"><span class="hc-dot good"></span><strong>Paired with</strong> ${apps || '—'}</div>
+				<p class="quiet">To add it to another app too, share "homeCore" from the app it is in (as for any Matter device).</p>`;
+		}
+		const note = b.has_access && !b.following_homecore ? '<p class="quiet">Connecting to homeCore…</p>' : '';
+		head.innerHTML = `${pairing}${note}
+			<div class="hc-row">
+				<span class="quiet">${b.shared} shared</span>
+				<button class="hc-pill danger" data-bridge="reset" ${busy}>Reset</button>
+				<button class="hc-pill" data-bridge="off" ${busy}>Turn off</button>
+			</div>`;
+		list.hidden = false;
+		this.#drawBridgeRows();
+	}
+
+	#drawBridgeRows() {
+		const rows = this.shadowRoot.getElementById('bridge-rows');
+		if (!rows) return;
+		if (this.#bridgeNote) {
+			rows.innerHTML = `<p class="quiet">${esc(this.#bridgeNote)}</p>`;
+			return;
+		}
+		const find = this.shadowRoot.getElementById('bridge-find').value;
+		const all = filterCandidates(this.#candidates, find);
+		const can = all.filter((c) => c.can_share);
+		const cannot = all.filter((c) => !c.can_share);
+		const row = (c) => `<tr>
+			<td>${esc(c.name)}${c.available ? '' : ' <span class="hc-tag bad">offline</span>'}${c.needs_confirm ? ' <span class="hc-tag warn">security</span>' : ''}</td>
+			<td class="quiet">${esc(c.shows_as)}</td>
+			<td><button class="hc-pill ${c.shared ? '' : 'go'}" data-share="${esc(c.device_id)}" data-on="${c.shared ? '0' : '1'}" ${this.#bridgeBusy ? 'disabled' : ''}>${c.shared ? 'Stop sharing' : 'Share'}</button></td>
+		</tr>`;
+		rows.innerHTML = `
+			${can.length ? `<table class="hc-table"><thead><tr><th>Device</th><th>Shows as</th><th></th></tr></thead><tbody>${can.map(row).join('')}</tbody></table>` : '<p class="quiet">No device matches.</p>'}
+			${cannot.length ? `<details><summary>${cannot.length} can't be shared</summary><table class="hc-table"><tbody>${cannot.map((c) => `<tr><td>${esc(c.name)}</td><td class="quiet">${esc(c.reason)}</td></tr>`).join('')}</tbody></table></details>` : ''}`;
+	}
+
+	async #onBridgeClick(e) {
+		const h = this.#host;
+		const act = e.target.closest('[data-bridge]')?.dataset.bridge;
+		const shareBtn = e.target.closest('[data-share]');
+		if (!act && !shareBtn) return;
+		let action;
+		let params = {};
+		if (act === 'on' || act === 'off') {
+			action = 'bridge_enable';
+			params = { on: act === 'on' };
+		} else if (act === 'reset') {
+			const ok = await h.ui.confirm({
+				title: 'Reset the bridge?',
+				body: 'Every app it is paired with loses homeCore\'s devices, and it gets a new pairing code. The devices it shares stay chosen.',
+				go: 'Reset',
+				danger: true,
+			});
+			if (!ok) return;
+			action = 'bridge_reset';
+		} else {
+			const id = shareBtn.dataset.share;
+			const on = shareBtn.dataset.on === '1';
+			const c = this.#candidates.find((x) => x.device_id === id);
+			params = { device_id: id, shared: on };
+			if (on && c?.needs_confirm) {
+				const ok = await h.ui.confirm({
+					title: `Share ${c.name} with other apps?`,
+					body: 'Anyone who can use an app the bridge is paired with, and its voice assistant, could then unlock or open it, without homeCore asking.',
+					go: 'Share it',
+					danger: true,
+				});
+				if (!ok) return;
+				params.confirm_security = true;
+			}
+			action = 'bridge_share';
+		}
+		this.#bridgeBusy = true;
+		this.#drawBridge();
+		const r = await h.action(action, params);
+		this.#bridgeBusy = false;
+		if (!r.ok) {
+			this.#bridge = { ...this.#bridge };
+			this.#drawBridge();
+			this.shadowRoot.getElementById('bridge-head').insertAdjacentHTML('beforeend', `<p class="error">${esc(r.error)}</p>`);
+			return;
+		}
+		await this.#refreshBridge();
 	}
 
 	#tickShares() {
