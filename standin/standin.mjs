@@ -17,7 +17,7 @@
 //   {"device": "contact", "open": true}
 //   {"device": "climate", "temperature": 21.5, "humidity": 40}
 
-import { Endpoint, ServerNode, VendorId } from "@matter/main";
+import { Endpoint, Environment, ServerNode, VendorId } from "@matter/main";
 import { AggregatorEndpoint } from "@matter/main/endpoints/aggregator";
 import { BridgedDeviceBasicInformationServer } from "@matter/main/behaviors/bridged-device-basic-information";
 import { ColorControlServer } from "@matter/main/behaviors/color-control";
@@ -47,7 +47,8 @@ const args = Object.fromEntries(
 const passcode = Number(args.passcode ?? 20202021);
 const discriminator = Number(args.discriminator ?? 3840);
 const port = Number(args.port ?? 5540);
-if (args.storage) process.env.MATTER_STORAGE_PATH = args.storage;
+// Everything matter.js keeps (the stand-in's fabrics) goes under its root path.
+if (args.storage) Environment.default.vars.set("path.root", args.storage);
 
 const bridged = (id, name) =>
   ({ id, bridgedDeviceBasicInformation: { nodeLabel: name, productName: name, reachable: true, uniqueId: id } });
