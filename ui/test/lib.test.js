@@ -56,3 +56,19 @@ test('filters the devices to share by name or type', () => {
 	assert.deepEqual(filterCandidates(list, 'contact').map((c) => c.name), ['Hall']);
 	assert.equal(filterCandidates(list, ' ').length, 3);
 });
+
+import { joinPieces, sha256Hex } from '../dist/lib.js';
+
+test('puts a backup back together from its pieces, in any order, and knows when one is missing', async () => {
+	const bytes = Buffer.from('a backup of the pairings, long enough to split');
+	const b64 = bytes.toString('base64');
+	const parts = [b64.slice(0, 20), b64.slice(20, 40), b64.slice(40)];
+	const ev = (i) => ({ stage: 'progress', data: { piece: parts[i], index: i, of: 3 } });
+	const joined = joinPieces([ev(2), { stage: 'progress', message: 'x' }, ev(0), ev(1), { stage: 'complete' }]);
+	assert.equal(Buffer.from(joined).toString(), bytes.toString());
+	assert.equal(joinPieces([ev(0), ev(2)]), null);
+	assert.equal(await sha256Hex(joined), require_sha(bytes));
+});
+
+import { createHash } from 'node:crypto';
+function require_sha(b) { return createHash('sha256').update(b).digest('hex'); }

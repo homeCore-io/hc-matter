@@ -104,6 +104,22 @@ export const ACTIONS = [
     timeoutMs: 60_000,
   }),
   new Action({
+    id: "backup",
+    requiresRole: RequiresRole.ADMIN,
+    label: "Back up the pairings",
+    description: "A file holding every Matter pairing (devices paired here, and the bridge's apps). Keep it somewhere safe: it restores them all. Matter pauses for a few seconds while it is made.",
+    stream: true,
+    concurrency: Concurrency.SINGLE,
+    timeoutMs: 120_000,
+  }),
+  new Action({
+    id: "restore_backup",
+    requiresRole: RequiresRole.ADMIN,
+    label: "Restore the pairings",
+    description: "Replace the pairings with those in a backup file (sent as an upload). What is there now is kept aside, not deleted. The plugin restarts.",
+    timeoutMs: 120_000,
+  }),
+  new Action({
     id: "set_wifi",
     requiresRole: RequiresRole.ADMIN,
     label: "Wi-Fi for pairing",

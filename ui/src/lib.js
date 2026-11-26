@@ -98,3 +98,31 @@ export function filterCandidates(list, text) {
 	if (!t) return list;
 	return list.filter((c) => c.name.toLowerCase().includes(t) || (c.type ?? '').replace(/_/g, ' ').includes(t));
 }
+
+/**
+ * A backup's bytes, from the stream events that carried it in pieces
+ * ({piece, index, of} in each progress event's data), or null if one is missing.
+ */
+export function joinPieces(events) {
+	const got = new Map();
+	let of = 0;
+	for (const e of events) {
+		const d = e?.data;
+		if (e?.stage === 'progress' && d && typeof d.piece === 'string' && Number.isInteger(d.index)) {
+			got.set(d.index, d.piece);
+			of = d.of;
+		}
+	}
+	if (!of || got.size !== of) return null;
+	const b64 = Array.from({ length: of }, (_, i) => got.get(i)).join('');
+	const bin = atob(b64);
+	const out = new Uint8Array(bin.length);
+	for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+	return out;
+}
+
+/** Hex SHA-256 of bytes, with the browser's (or Node's) Web Crypto. */
+export async function sha256Hex(bytes) {
+	const d = await crypto.subtle.digest('SHA-256', bytes);
+	return Array.from(new Uint8Array(d), (b) => b.toString(16).padStart(2, '0')).join('');
+}

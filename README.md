@@ -135,6 +135,24 @@ The bridge's actions: `bridge_status`, `bridge_enable` (`on`),
 `bridge_devices`, `bridge_share` (`device_id`, `shared`,
 `confirm_security`) and `bridge_reset`.
 
+## Backing up the pairings
+
+Every pairing (the devices paired here, and the apps the bridge is paired
+with) is kept in the plugin's data folder on the runtime, which homeCore's own
+backup doesn't hold. Lose it and every device needs pairing again.
+
+- **Download a backup** on the plugin's page (or the `backup` action, which
+  streams it) makes one file, `hc-matter-backup-<date>.json.gz`: the
+  controller's and the bridge's storage and the bridge's choices, without
+  caches that are fetched again. Matter pauses for a few seconds while it is
+  copied. Keep it off the house's server.
+- **Restore from a backup** (`restore_backup`, sent the file as an upload;
+  needs SDK 0.4.7 and homeCore 0.1.87 or later) checks the file, moves what is
+  there now to `data/before-restore-<time>/` (never deleted by the plugin),
+  writes the backup and restarts the plugin.
+- A notice says so while the pairings have never been backed up, or some are
+  newer than the last backup.
+
 ## Devices
 
 Each Matter endpoint that has a device type becomes one homeCore device. Its id
@@ -160,6 +178,9 @@ as in "Hall Climate temperature". Rename and place devices in homeCore.
 | Occupancy sensor | `occupancy_sensor` | `occupied` | |
 | Temperature, humidity, light, pressure sensors | `temperature_sensor`, `humidity_sensor`, `light_sensor`, `pressure_sensor` | `temperature` (°C), `humidity` (%), `illuminance` (lux), `pressure` (hPa) | |
 | Water leak, rain | `water_sensor`, `rain_sensor` | `water_detected`, `rain_detected` | |
+| Smoke and CO alarms | `smoke_alarm` | `smoke`, `co_detected` (true at a warning or an alarm; they raise homeCore's critical smoke and carbon monoxide alerts), `smoke_level`, `co_level`, and out of the way `hardware_fault`, `end_of_service`, `muted`, `test_in_progress` | action `self_test` |
+| Air quality sensors | `air_quality_sensor` | `air_quality` (good … extremely_poor), `pm25_ugm3`, `pm10_ugm3`, `co2`, and temperature and humidity when it has them | |
+| Buttons and remotes (Generic Switch): one device per remote, button 1, 2, … in order | `remote` | `button_N` (press, hold, release), and `pushed`, `held`, `released`, `double_tapped` holding the button's number for an instant, as automations' button triggers read; `last_button` | |
 | Anything else | `matter` | what its clusters above report | |
 
 On any device, where present:
@@ -220,6 +241,14 @@ npm test          # the mapping, conversions, config, the page's logic; no netwo
 The device mapping is pure (`src/devices.ts`). It is tested against a node dump
 that matter-server produced for the stand-in (`tests/fixtures`), not a
 hand-written one.
+
+### End to end
+
+`tests/e2e/pair.mjs` runs the stand-in, the built plugin and a broker the way
+homeCore does: it pairs through the `pair` action, commands the lamp, presses
+the stand-in's button and sets off its CO alarm, and checks what the plugin
+publishes. CI runs it on every push. Run it only where mDNS reaches nothing
+real: a CI runner, or the `hc-matter-lab` network.
 
 ### The stand-in, and never the house
 

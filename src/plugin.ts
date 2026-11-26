@@ -10,12 +10,14 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Config } from "./config.js";
-import { availableOf, commandFor, devicesOf, devicesTouchedBy, nodeIdOf, stateOf, type Device, type MatterOp, type NodeData } from "./devices.js";
+import { Cluster } from "./clusters.js";
+import { availableOf, buttonPatches, commandFor, devicesOf, devicesTouchedBy, nodeIdOf, stateOf, type Device, type MatterOp, type NodeData } from "./devices.js";
 import { MatterLink, nodeDataOf, parseNodeId } from "./link.js";
 import { ACTIONS, SHARE_WINDOW_SECS, ownFabricIndex, summarize, summarizeFabrics } from "./admin.js";
 import { FIRMWARE_ALERT, FirmwareWatch, firmwareAlert, type FoundUpdate } from "./firmware.js";
 import { BRIDGE_ACTIONS, BRIDGE_SCOPES, BridgeService } from "./bridge/service.js";
 import { CONFIG_DESCRIPTOR, CONFIG_SCHEMA } from "./settings.js";
+import { apply, collect, lastBackup, pack, pieces, recordBackup, sha256, unpack } from "./backup.js";
 import { MatterServerProcess, type Log, type LogLevel } from "./server.js";
 
 /** State that follows a command within this long is reported as its result. */
@@ -32,7 +34,7 @@ export class MatterPlugin extends PluginBase {
   private readonly availability = new Map<string, boolean>();
   private readonly causes = new Map<string, { payload: Record<string, unknown>; until: number }>();
   private readonly server: MatterServerProcess;
-  private readonly link: MatterLink;
+  private link: MatterLink;
   private mqttUp = false;
   private serverProblem: PluginNotice | null = null;
   /** Nodes are known only once the link has listed them; until then reconcile nothing. */
@@ -71,11 +73,27 @@ export class MatterPlugin extends PluginBase {
         }
       },
     });
-    this.link = new MatterLink(config.matter.socketPath, log, {
+    this.link = this.newLink();
+  }
+
+  private newLink(): MatterLink {
+    return new MatterLink(this.config.matter.socketPath, (level, message) => this.log(level, message), {
       onNodes: (nodes) => this.onNodes(nodes),
       onNodeChanged: (detail, node) => this.onNodeChanged(detail, node),
       onDown: () => this.onLinkDown(),
+      onEvent: (e) => this.onMatterEvent(e),
     });
+  }
+
+  /** A device's event: a remote's button, as homeCore's remotes report them. */
+  private onMatterEvent(e: { node_id: number | bigint; endpoint_id: number; cluster_id: number; event_id: number; data: unknown }): void {
+    if (e.cluster_id !== Cluster.Switch || !this.mqttUp) return;
+    const nodeId = String(e.node_id);
+    for (const d of this.devices.values()) {
+      if (d.nodeId !== nodeId || !d.buttons?.includes(e.endpoint_id)) continue;
+      for (const patch of buttonPatches(d, e.endpoint_id, e.event_id, e.data)) this.publishStatePartial(d.id, patch);
+      return;
+    }
   }
 
   // ── Logging ────────────────────────────────────────────────────────────────
@@ -276,6 +294,15 @@ export class MatterPlugin extends PluginBase {
         remedy: "Check they have power and are on the network. Thread devices also need a Thread border router.",
       }));
     }
+    const last = lastBackup(this.dataDir);
+    const newest = [...this.nodes.values()].map((n) => n.date_commissioned ?? "").sort().pop() ?? "";
+    if (this.nodes.size > 0 && (!last || (newest && newest > last))) {
+      notices.push(PluginNotice.info("not_backed_up", last
+        ? "Some Matter pairings are newer than the last backup."
+        : "The Matter pairings have never been backed up.", {
+        remedy: "Use \"Back up the pairings\" on the Matter page and keep the file. Without it, losing the runtime's data means pairing every device again.",
+      }));
+    }
     if (this.bridge?.problem) {
       notices.push(PluginNotice.error("bridge_failing", this.bridge.problem, {
         remedy: "Check the plugin's log. Port 5541 must be free on the runtime's host; turning the bridge off and on again retries.",
@@ -330,6 +357,8 @@ export class MatterPlugin extends PluginBase {
 
   async onAction(action: string, params: Record<string, unknown>, ctx: StreamContext | null, caller?: Caller | null): Promise<unknown> {
     if (action === "pair" && ctx) return this.pair(String(params.code ?? ""), ctx, caller);
+    if (action === "backup" && ctx) return this.backup(ctx, caller);
+    if (action === "restore_backup") return this.restore(String(params.file_path ?? ""), caller);
     if (action === "remove_node") return this.removeNode(String(params.node_id ?? ""), caller);
     if (action === "nodes") return { nodes: [...this.nodes.values()].map(summarize) };
     const bridged = await this.bridge.action(action, params, caller?.username ?? "someone");
@@ -443,6 +472,64 @@ export class MatterPlugin extends PluginBase {
     } else {
       this.alertedOn.delete(nodeId);
     }
+  }
+
+  /** The data folder: beside the plugin's installed versions. */
+  private get dataDir(): string {
+    return dirname(this.config.matter.storageDir);
+  }
+
+  /** Pause Matter (the controller and the bridge), for a consistent copy of their storage. */
+  private async pauseMatter(): Promise<boolean> {
+    this.link.close();
+    const [stopped] = await Promise.all([this.server.stop(15_000), this.bridge.pause()]);
+    return stopped;
+  }
+
+  private resumeMatter(): void {
+    this.link = this.newLink();
+    this.server.resume();
+    this.bridge.resume().catch((e) => this.log("error", `bridge: could not start again: ${(e as Error).message}`));
+  }
+
+  private async backup(ctx: StreamContext, caller?: Caller | null): Promise<void> {
+    ctx.progress({ percent: 5, message: "Pausing Matter for a moment" });
+    let file: Buffer;
+    try {
+      if (!(await this.pauseMatter())) {
+        return ctx.error("The Matter server didn't pause in time, so no backup was made. Try again.");
+      }
+      ctx.progress({ percent: 25, message: "Copying the pairings" });
+      file = pack(collect(this.dataDir), this.version);
+    } finally {
+      this.resumeMatter();
+    }
+    recordBackup(this.dataDir);
+    this.refreshNotices();
+    const parts = pieces(file);
+    parts.forEach((piece, i) => ctx.progress({
+      percent: 30 + Math.round((70 * (i + 1)) / parts.length),
+      message: "Sending the backup",
+      data: { piece, index: i, of: parts.length },
+    }));
+    const name = `hc-matter-backup-${new Date().toISOString().slice(0, 10)}.json.gz`;
+    this.log("info", `backup of the Matter pairings made for ${caller?.username ?? "someone"} (${file.length} bytes)`);
+    ctx.complete({ name, size: file.length, sha256: sha256(file), pieces: parts.length });
+  }
+
+  private async restore(filePath: string, caller?: Caller | null): Promise<Record<string, unknown>> {
+    if (!filePath) throw new Error("Send the backup file with this action (an upload).");
+    const { readFileSync } = await import("node:fs");
+    const { backup, files } = unpack(readFileSync(filePath));
+    if (!(await this.pauseMatter())) {
+      this.resumeMatter();
+      throw new Error("The Matter server didn't pause in time, so nothing was restored. Try again.");
+    }
+    const aside = apply(this.dataDir, files);
+    this.log("warn", `Matter pairings restored from a backup of ${backup.created} by ${caller?.username ?? "someone"}; the previous ones are in ${aside}. Restarting.`);
+    // Start afresh on what was restored: the runtime starts the plugin again.
+    setTimeout(() => process.exit(0), 1500).unref();
+    return { restored: backup.created, files: Object.keys(files).length, previous_kept_in: aside };
   }
 
   private requireClient(): NonNullable<MatterLink["client"]> {

@@ -61,7 +61,7 @@ describe("who may", () => {
     const { BRIDGE_ACTIONS } = await import("../src/bridge/service.js");
     const all = [...ACTIONS, ...BRIDGE_ACTIONS] as unknown as { id: string; requiresRole: string }[];
     const admin = ["pair", "share_node", "remove_fabric", "reinterview", "update_firmware", "remove_node", "set_wifi",
-      "set_thread_dataset", "bridge_status", "bridge_enable", "bridge_share", "bridge_reset"];
+      "set_thread_dataset", "bridge_status", "bridge_enable", "bridge_share", "bridge_reset", "backup", "restore_backup"];
     for (const a of all) expect(a.requiresRole, a.id).toBe(admin.includes(a.id) ? "admin" : "user");
   });
 });
