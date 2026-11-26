@@ -242,6 +242,14 @@ The device mapping is pure (`src/devices.ts`). It is tested against a node dump
 that matter-server produced for the stand-in (`tests/fixtures`), not a
 hand-written one.
 
+### End to end
+
+`tests/e2e/pair.mjs` runs the stand-in, the built plugin and a broker the way
+homeCore does: it pairs through the `pair` action, commands the lamp, presses
+the stand-in's button and sets off its CO alarm, and checks what the plugin
+publishes. CI runs it on every push. Run it only where mDNS reaches nothing
+real: a CI runner, or the `hc-matter-lab` network.
+
 ### The stand-in, and never the house
 
 `standin/standin.mjs` is a virtual Matter bridge built with matter.js. It
