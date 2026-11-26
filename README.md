@@ -143,6 +143,15 @@ that a device refuses changes nothing.
 - **No devices are paired yet.**
 - **Test devices are allowed** (`allow_test_devices` is on).
 
+## Alerts
+
+- **Firmware update available** (`firmware_update`, off until you turn it
+  on): a newer firmware is published for a paired device. It is on the node's
+  first homeCore device, names the node and the version, and its **Update…**
+  button installs it after a confirm. The plugin asks ten minutes after it
+  starts and then twice a day; the alert clears when the device runs that
+  version. Needs `firmware_updates` on.
+
 ## Settings
 
 In the plugin's config file, under `[matter]`:
