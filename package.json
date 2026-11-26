@@ -1,6 +1,6 @@
 {
   "name": "hc-matter",
-  "version": "0.3.0",
+  "version": "0.1.0",
   "description": "Matter devices in homeCore, through the Open Home Foundation Matter server",
   "license": "MIT OR Apache-2.0",
   "type": "module",
