@@ -6,7 +6,7 @@
 // same conversions the controller uses the other way), and a change another
 // app makes becomes a homeCore command in homeCore's names.
 
-import { coverFromMatter, coverToMatter, kelvinToMireds, levelToPct, miredsToKelvin, num, pctToLevel, toHundredths, xyFromMatter, xyToMatter } from "../convert.js";
+import { coverFromMatter, coverToMatter, hundredths, kelvinToMireds, levelToPct, miredsToKelvin, num, pctToLevel, toHundredths, xyFromMatter, xyToMatter } from "../convert.js";
 
 /** A device as homeCore's event stream and snapshot describe it. */
 export interface HomeDevice {
@@ -17,15 +17,23 @@ export interface HomeDevice {
   plugin_id?: string | null;
   available?: boolean;
   attributes: Record<string, unknown>;
-  schema?: { attributes?: Record<string, { writable?: boolean }> } | null;
+  schema?: { attributes?: Record<string, SchemaAttr> } | null;
   ui_hint?: string | null;
   security?: boolean | null;
+}
+
+export interface SchemaAttr {
+  writable?: boolean;
+  min?: number | null;
+  max?: number | null;
+  /** Plain strings, or {value, label}, as plugins declare them. */
+  options?: (string | { value: string })[] | null;
 }
 
 export type BridgeKind =
   | "on_off_light" | "dimmable_light" | "color_temperature_light" | "extended_color_light"
   | "plug" | "door_lock" | "window_covering" | "contact_sensor" | "occupancy_sensor"
-  | "temperature_sensor" | "humidity_sensor" | "water_leak" | "light_sensor";
+  | "temperature_sensor" | "humidity_sensor" | "water_leak" | "light_sensor" | "thermostat" | "fan";
 
 /** One Matter endpoint a homeCore device becomes (a climate sensor becomes two). */
 export interface BridgePart {
@@ -34,6 +42,13 @@ export interface BridgePart {
   kind: BridgeKind;
   /** Whether the lift can be set to a position, for a cover. */
   positioned?: boolean;
+  /** A thermostat: the homeCore attribute holding each setpoint, its limits, and the modes it takes. */
+  heat?: "heat_setpoint" | "setpoint" | null;
+  cool?: "cool_setpoint" | null;
+  heatLimits?: [number, number];
+  coolLimits?: [number, number];
+  modes?: string[];
+  modeWritable?: boolean;
 }
 
 export const BRIDGE_KIND_NAMES: Record<BridgeKind, string> = {
@@ -41,6 +56,7 @@ export const BRIDGE_KIND_NAMES: Record<BridgeKind, string> = {
   extended_color_light: "colour light", plug: "switch", door_lock: "lock", window_covering: "blind or cover",
   contact_sensor: "contact sensor", occupancy_sensor: "occupancy sensor", temperature_sensor: "temperature sensor",
   humidity_sensor: "humidity sensor", water_leak: "leak sensor", light_sensor: "light sensor",
+  thermostat: "thermostat", fan: "fan",
 };
 
 const has = (d: HomeDevice, attr: string) =>
@@ -86,6 +102,10 @@ export function partsFor(d: HomeDevice, ownPluginId: string): BridgePart[] | { r
     case "motion_sensor":
     case "occupancy_sensor":
       return has(d, "motion") || has(d, "occupied") ? [{ key, kind: "occupancy_sensor" }] : { reason: "It reports no motion." };
+    case "thermostat":
+      return thermostatPart(d, key);
+    case "fan":
+      return has(d, "on") || has(d, "speed_pct") ? [{ key, kind: "fan" }] : { reason: "It has no on/off or speed." };
     case "water_sensor":
       return has(d, "water_detected") ? [{ key, kind: "water_leak" }] : { reason: "It does not report water." };
     case "light_sensor":
@@ -102,6 +122,40 @@ export function partsFor(d: HomeDevice, ownPluginId: string): BridgePart[] | { r
     default:
       return { reason: t ? `Matter has no ${t.replace(/_/g, " ")} this bridge can show yet.` : "It has no device type." };
   }
+}
+
+/** The values an attribute's options allow, whichever way the plugin wrote them. */
+function optionValues(a?: SchemaAttr): string[] {
+  return (a?.options ?? []).map((o) => (typeof o === "string" ? o : o.value)).filter((v): v is string => typeof v === "string");
+}
+
+const limits = (a: SchemaAttr | undefined, lo: number, hi: number): [number, number] =>
+  [typeof a?.min === "number" ? a.min : lo, typeof a?.max === "number" ? a.max : hi];
+
+/** A thermostat as what it has: heating, cooling or both, and its own modes and limits. */
+function thermostatPart(d: HomeDevice, key: string): BridgePart[] | { reason: string } {
+  const sch = d.schema?.attributes ?? {};
+  const heat = has(d, "heat_setpoint") ? "heat_setpoint" : has(d, "setpoint") ? "setpoint" : null;
+  const cool = has(d, "cool_setpoint") ? "cool_setpoint" : null;
+  if (!heat && !cool) return { reason: "It has no setpoint." };
+  const declared = optionValues(sch.hvac_mode);
+  const known = declared.length ? declared : typeof d.attributes.hvac_mode === "string" ? [d.attributes.hvac_mode] : [];
+  const modes = known.filter((m) => m in SYSTEM_MODE_FOR && (m !== "heat" || heat) && (m !== "cool" || cool) && (m !== "auto" || (heat && cool)));
+  return [{
+    key, kind: "thermostat", heat, cool,
+    heatLimits: limits(sch[heat ?? ""], 7, 30),
+    coolLimits: limits(sch[cool ?? ""], 16, 32),
+    modes,
+    modeWritable: writable(d, "hvac_mode"),
+  }];
+}
+
+export const SYSTEM_MODE_FOR: Record<string, number> = { off: 0, auto: 1, cool: 3, heat: 4, fan_only: 7, dry: 8 };
+const MODE_OF: Record<number, string> = { 0: "off", 1: "auto", 3: "cool", 4: "heat", 7: "fan_only", 8: "dry" };
+
+/** Matter's FanMode for a speed: Off, Low, Medium, High. */
+export function fanModeFor(pct: number): number {
+  return pct <= 0 ? 0 : pct <= 33 ? 1 : pct <= 66 ? 2 : 3;
 }
 
 /**
@@ -200,6 +254,26 @@ export function clusterState(part: BridgePart, a: Record<string, unknown>): Reco
     case "light_sensor":
       if (typeof a.illuminance === "number") out.illuminanceMeasurement = { measuredValue: luxToMatter(a.illuminance) };
       break;
+    case "thermostat": {
+      const t: Record<string, unknown> = {};
+      if (typeof a.temperature === "number") t.localTemperature = toHundredths(a.temperature);
+      const clamp = (v: number, [lo, hi]: [number, number]) => Math.min(hi, Math.max(lo, v));
+      if (part.heat && typeof a[part.heat] === "number") t.occupiedHeatingSetpoint = toHundredths(clamp(a[part.heat] as number, part.heatLimits ?? [7, 30]));
+      if (part.cool && typeof a[part.cool] === "number") t.occupiedCoolingSetpoint = toHundredths(clamp(a[part.cool] as number, part.coolLimits ?? [16, 32]));
+      if (typeof a.hvac_mode === "string" && a.hvac_mode in SYSTEM_MODE_FOR) t.systemMode = SYSTEM_MODE_FOR[a.hvac_mode];
+      if (typeof a.hvac_action === "string" || a.hvac_action === null) {
+        t.thermostatRunningState = { heat: a.hvac_action === "heating", cool: a.hvac_action === "cooling", fan: a.hvac_action === "fan" };
+      }
+      if (Object.keys(t).length) out.thermostat = t;
+      break;
+    }
+    case "fan": {
+      const speed = typeof a.speed_pct === "number" ? Math.round(Math.max(0, Math.min(100, a.speed_pct))) : null;
+      const off = on === false || speed === 0;
+      const pct = off ? 0 : speed ?? 100;
+      if (on !== null || speed !== null) out.fanControl = { fanMode: off ? 0 : fanModeFor(pct), percentSetting: pct, percentCurrent: pct };
+      break;
+    }
   }
   return out;
 }
@@ -250,6 +324,38 @@ export function commandFrom(part: BridgePart, c: MatterChange, current: Record<s
       if (part.positioned) return same("position", p, 1) ? null : { position: p };
       // A cover that only opens and closes.
       return p >= 50 ? { action: "open" } : { action: "close" };
+    }
+    case "thermostat.systemMode": {
+      const m = MODE_OF[num(c.value) ?? -1];
+      if (!m || !part.modeWritable || !(part.modes ?? []).includes(m)) return null;
+      return current.hvac_mode === m ? null : { hvac_mode: m };
+    }
+    case "thermostat.occupiedHeatingSetpoint": {
+      const v = hundredths(c.value);
+      if (v === null || !part.heat) return null;
+      return same(part.heat, v, 0.05) ? null : { [part.heat]: v };
+    }
+    case "thermostat.occupiedCoolingSetpoint": {
+      const v = hundredths(c.value);
+      if (v === null || !part.cool) return null;
+      return same(part.cool, v, 0.05) ? null : { [part.cool]: v };
+    }
+    case "fanControl.percentSetting": {
+      const p = num(c.value);
+      if (p === null) return null;
+      const now = current.on === false ? 0 : typeof current.speed_pct === "number" ? current.speed_pct : current.on ? 100 : 0;
+      if (Math.abs(now - p) <= 1) return null;
+      return p <= 0 ? { on: false } : { speed_pct: p };
+    }
+    case "fanControl.fanMode": {
+      const m = num(c.value);
+      if (m === null) return null;
+      const now = current.on === false ? 0 : typeof current.speed_pct === "number" ? current.speed_pct : current.on ? 100 : 0;
+      // A mode that already matches the speed is homeCore's own, reflected back.
+      if (m <= 3 && fanModeFor(now) === m) return null;
+      if (m === 0) return { on: false };
+      if (m >= 4) return current.on === true ? null : { on: true };
+      return { speed_pct: [0, 33, 66, 100][m] };
     }
     default:
       return null;

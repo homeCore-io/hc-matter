@@ -140,3 +140,60 @@ describe("what matter.js needs", () => {
     expect(say(outer)).toBe("Behaviors have errors (initializing colorControl (Matter requires you to set this attribute))");
   });
 });
+
+describe("thermostats", () => {
+  const mysa = dev("thermostat", { heat_setpoint: 26.1, hvac_mode: "heat", temperature: 22.44 }, {
+    schema: { attributes: { heat_setpoint: { writable: true, min: 5, max: 30 }, hvac_mode: { writable: true, options: [{ value: "off" }, { value: "heat" }] } } },
+  });
+  const nuheat = dev("thermostat", { setpoint: 12.67, hvac_mode: "heat", hvac_action: "idle", temperature: 23.17 }, {
+    schema: { attributes: { setpoint: { writable: true, min: 5, max: 30 }, hvac_mode: { writable: false, options: ["heat"] } } },
+  });
+  const dual = dev("thermostat", { heat_setpoint: 20, cool_setpoint: 26, hvac_mode: "auto", temperature: 21 }, {
+    schema: { attributes: { heat_setpoint: { writable: true }, cool_setpoint: { writable: true }, hvac_mode: { writable: true, options: ["off", "heat", "cool", "auto", "eco"] } } },
+  });
+  const part = (d: HomeDevice) => (partsFor(d, "plugin.matter") as never[])[0] as never;
+
+  it("has what the device has: heating, cooling, its limits, and the modes it takes", () => {
+    expect(part(mysa)).toMatchObject({ heat: "heat_setpoint", cool: null, heatLimits: [5, 30], modes: ["off", "heat"], modeWritable: true });
+    expect(part(nuheat)).toMatchObject({ heat: "setpoint", modes: ["heat"], modeWritable: false });
+    expect(part(dual)).toMatchObject({ heat: "heat_setpoint", cool: "cool_setpoint", modes: ["off", "heat", "cool", "auto"] });
+    expect(partsFor(dev("thermostat", { temperature: 20 }), "x")).toEqual({ reason: "It has no setpoint." });
+  });
+
+  it("shows temperatures and setpoints in hundredths, within the device's limits", () => {
+    expect(clusterState(part(mysa), mysa.attributes)).toEqual({ thermostat: { localTemperature: 2244, occupiedHeatingSetpoint: 2610, systemMode: 4 } });
+    expect(clusterState(part(nuheat), { ...nuheat.attributes, setpoint: 40 }).thermostat).toMatchObject({ occupiedHeatingSetpoint: 3000 });
+    expect(clusterState(part(dual), { hvac_action: "cooling" }).thermostat).toEqual({ thermostatRunningState: { heat: false, cool: true, fan: false } });
+  });
+
+  it("sends setpoints and modes back under the device's own names", () => {
+    expect(commandFrom(part(nuheat), { cluster: "thermostat", attribute: "occupiedHeatingSetpoint", value: 2050 }, nuheat.attributes)).toEqual({ setpoint: 20.5 });
+    expect(commandFrom(part(dual), { cluster: "thermostat", attribute: "occupiedCoolingSetpoint", value: 2400 }, dual.attributes)).toEqual({ cool_setpoint: 24 });
+    expect(commandFrom(part(mysa), { cluster: "thermostat", attribute: "systemMode", value: 0 }, mysa.attributes)).toEqual({ hvac_mode: "off" });
+  });
+
+  it("sends nothing it can't do, or homeCore already has", () => {
+    // NuHeat's mode can't be set; Mysa has no cooling; the setpoint is homeCore's own, reflected.
+    expect(commandFrom(part(nuheat), { cluster: "thermostat", attribute: "systemMode", value: 0 }, nuheat.attributes)).toBeNull();
+    expect(commandFrom(part(mysa), { cluster: "thermostat", attribute: "systemMode", value: 3 }, mysa.attributes)).toBeNull();
+    expect(commandFrom(part(mysa), { cluster: "thermostat", attribute: "occupiedHeatingSetpoint", value: 2610 }, mysa.attributes)).toBeNull();
+  });
+});
+
+describe("fans", () => {
+  const fan = { key: "k", kind: "fan" } as const;
+  it("shows on and speed as Matter's mode and percent", () => {
+    expect(clusterState(fan, { on: true, speed_pct: 25.5 })).toEqual({ fanControl: { fanMode: 1, percentSetting: 26, percentCurrent: 26 } });
+    expect(clusterState(fan, { on: false, speed_pct: 60 })).toEqual({ fanControl: { fanMode: 0, percentSetting: 0, percentCurrent: 0 } });
+    expect(clusterState(fan, { on: true })).toEqual({ fanControl: { fanMode: 3, percentSetting: 100, percentCurrent: 100 } });
+  });
+  it("turns another app's speed or mode into homeCore's, and ignores its own reflected", () => {
+    expect(commandFrom(fan, { cluster: "fanControl", attribute: "percentSetting", value: 50 }, { on: true, speed_pct: 25 })).toEqual({ speed_pct: 50 });
+    expect(commandFrom(fan, { cluster: "fanControl", attribute: "percentSetting", value: 0 }, { on: true, speed_pct: 25 })).toEqual({ on: false });
+    expect(commandFrom(fan, { cluster: "fanControl", attribute: "fanMode", value: 3 }, { on: false, speed_pct: 0 })).toEqual({ speed_pct: 100 });
+    expect(commandFrom(fan, { cluster: "fanControl", attribute: "fanMode", value: 0 }, { on: true, speed_pct: 40 })).toEqual({ on: false });
+    // 25.5 % shows as Low and 26 %: neither is a change.
+    expect(commandFrom(fan, { cluster: "fanControl", attribute: "fanMode", value: 1 }, { on: true, speed_pct: 25.5 })).toBeNull();
+    expect(commandFrom(fan, { cluster: "fanControl", attribute: "percentSetting", value: 26 }, { on: true, speed_pct: 25.5 })).toBeNull();
+  });
+});

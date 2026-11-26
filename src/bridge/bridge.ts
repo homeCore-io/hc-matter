@@ -13,6 +13,10 @@ import { ColorControlServer } from "@matter/main/behaviors/color-control";
 import { DoorLockServer } from "@matter/main/behaviors/door-lock";
 import { WindowCoveringServer } from "@matter/main/behaviors/window-covering";
 import { OccupancySensingServer } from "@matter/main/behaviors/occupancy-sensing";
+import { ThermostatServer } from "@matter/main/behaviors/thermostat";
+import { FanControlServer } from "@matter/main/behaviors/fan-control";
+import { ThermostatDevice } from "@matter/main/devices/thermostat";
+import { FanDevice } from "@matter/main/devices/fan";
 import { OnOffLightDevice } from "@matter/main/devices/on-off-light";
 import { DimmableLightDevice } from "@matter/main/devices/dimmable-light";
 import { ColorTemperatureLightDevice } from "@matter/main/devices/color-temperature-light";
@@ -71,8 +75,34 @@ function makeEndpoint(part: BridgePart, name: string, uniqueId: string, reachabl
     water_leak: () => new Endpoint(WaterLeakDetectorDevice.with(B), { id, ...bridged, booleanState: { stateValue: false } } as any),
     light_sensor: () => new Endpoint(LightSensorDevice.with(B),
       { id, ...bridged, illuminanceMeasurement: { measuredValue: null, minMeasuredValue: 1, maxMeasuredValue: 0xfffe } } as any),
+    thermostat: () => thermostatEndpoint(part, id, bridged),
+    fan: () => new Endpoint(FanDevice.with(B, FanControlServer),
+      { id, ...bridged, fanControl: { fanMode: 0, fanModeSequence: 0, percentSetting: 0, percentCurrent: 0 } } as any),
   };
   return kinds[part.kind]();
+}
+
+/** A thermostat with the features the homeCore one has: heating, cooling, and auto when it has both. */
+function thermostatEndpoint(part: BridgePart, id: string, bridged: object): AnyEndpoint {
+  const features: ("Heating" | "Cooling" | "AutoMode")[] = [];
+  if (part.heat) features.push("Heating");
+  if (part.cool) features.push("Cooling");
+  const auto = !!part.heat && !!part.cool && (part.modes ?? []).includes("auto");
+  if (auto) features.push("AutoMode");
+  const [hLo, hHi] = part.heatLimits ?? [7, 30];
+  const [cLo, cHi] = part.coolLimits ?? [16, 32];
+  const c = (v: number) => Math.round(v * 100);
+  const t: Record<string, unknown> = {
+    localTemperature: null,
+    // Heating only, cooling only, or both (ControlSequenceOfOperation).
+    controlSequenceOfOperation: part.heat && part.cool ? 4 : part.heat ? 2 : 0,
+    systemMode: part.heat ? 4 : 3,
+    thermostatRunningState: { heat: false, cool: false, fan: false },
+  };
+  if (part.heat) Object.assign(t, { occupiedHeatingSetpoint: c(Math.min(hHi, Math.max(hLo, 20))), absMinHeatSetpointLimit: c(hLo), absMaxHeatSetpointLimit: c(hHi), minHeatSetpointLimit: c(hLo), maxHeatSetpointLimit: c(hHi) });
+  if (part.cool) Object.assign(t, { occupiedCoolingSetpoint: c(Math.min(cHi, Math.max(cLo, 26))), absMinCoolSetpointLimit: c(cLo), absMaxCoolSetpointLimit: c(cHi), minCoolSetpointLimit: c(cLo), maxCoolSetpointLimit: c(cHi) });
+  if (auto) t.minSetpointDeadBand = 2;
+  return new Endpoint(ThermostatDevice.with(B, ThermostatServer.with(...features)), { id, ...bridged, thermostat: t } as any);
 }
 
 /** A part's UniqueID: stable, and within Matter's 32 characters. */
@@ -87,6 +117,8 @@ const WATCHED: Record<string, string[]> = {
   colorControl: ["colorTemperatureMireds", "currentX", "currentY"],
   doorLock: ["lockState"],
   windowCovering: ["targetPositionLiftPercent100ths"],
+  thermostat: ["systemMode", "occupiedHeatingSetpoint", "occupiedCoolingSetpoint"],
+  fanControl: ["percentSetting", "fanMode"],
 };
 
 interface Shared {
@@ -94,6 +126,8 @@ interface Shared {
   parts: { part: BridgePart; endpoint: AnyEndpoint }[];
   pending: Record<string, unknown>;
   timer: NodeJS.Timeout | null;
+  /** Puts homeCore's state back after a change it can't take. */
+  resync: NodeJS.Timeout | null;
   /** Colour arrives as two attributes; kept until both are known. */
   xy: { x?: unknown; y?: unknown };
 }
@@ -148,7 +182,7 @@ export class MatterBridge {
         vendorName: "homeCore",
         // Matter's test vendor: the bridge is not certified.
         vendorId: VendorId(0xfff1),
-        productName: "homeCore bridge",
+        productName: "Matter bridge",
         productId: 0x8001,
         nodeLabel: "homeCore",
         serialNumber: "homecore-bridge",
@@ -170,6 +204,7 @@ export class MatterBridge {
     this.starting = null;
     for (const s of this.shared.values()) {
       if (s.timer) clearTimeout(s.timer);
+      if (s.resync) clearTimeout(s.resync);
       s.parts = [];
     }
     if (node) {
@@ -218,7 +253,7 @@ export class MatterBridge {
       return;
     }
     if (before) await this.unshare(device.device_id);
-    const s: Shared = { device, parts: parts.map((part) => ({ part, endpoint: null as unknown as AnyEndpoint })), pending: {}, timer: null, xy: {} };
+    const s: Shared = { device, parts: parts.map((part) => ({ part, endpoint: null as unknown as AnyEndpoint })), pending: {}, timer: null, resync: null, xy: {} };
     this.shared.set(device.device_id, s);
     if (this.aggregator) await this.addParts(s);
   }
@@ -228,6 +263,7 @@ export class MatterBridge {
     if (!s) return;
     this.shared.delete(deviceId);
     if (s.timer) clearTimeout(s.timer);
+    if (s.resync) clearTimeout(s.resync);
     for (const { endpoint } of s.parts) {
       try {
         if (endpoint) await endpoint.delete();
@@ -282,6 +318,11 @@ export class MatterBridge {
     } else {
       const cmd = commandFrom(part, { cluster, attribute, value }, view);
       if (cmd) Object.assign(s.pending, cmd);
+      // Nothing to send: homeCore's own state reflected back, or a change the
+      // device can't take (a mode it has no way to set). Show homeCore's state
+      // again shortly, so the other app is never left showing something false;
+      // for a reflection that changes nothing.
+      else this.resyncSoon(s);
     }
     if (Object.keys(s.pending).length === 0) return;
     if (s.timer) clearTimeout(s.timer);
@@ -292,6 +333,14 @@ export class MatterBridge {
       this.log("info", `bridge: another app set ${homeName(s.device)}: ${JSON.stringify(body)}`);
       this.send(s.device.device_id, body).catch((e) => this.log("warn", `bridge: ${homeName(s.device)} refused ${JSON.stringify(body)}: ${(e as Error).message}`));
     }, SETTLE_MS);
+  }
+
+  private resyncSoon(s: Shared): void {
+    if (s.resync) clearTimeout(s.resync);
+    s.resync = setTimeout(() => {
+      s.resync = null;
+      if (this.shared.get(s.device.device_id) === s) void this.applyState(s);
+    }, SETTLE_MS * 2);
   }
 
   /** homeCore's state, into the bridge. */
