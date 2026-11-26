@@ -178,6 +178,8 @@ as in "Hall Climate temperature". Rename and place devices in homeCore.
 | Occupancy sensor | `occupancy_sensor` | `occupied` | |
 | Temperature, humidity, light, pressure sensors | `temperature_sensor`, `humidity_sensor`, `light_sensor`, `pressure_sensor` | `temperature` (°C), `humidity` (%), `illuminance` (lux), `pressure` (hPa) | |
 | Water leak, rain | `water_sensor`, `rain_sensor` | `water_detected`, `rain_detected` | |
+| Smoke and CO alarms | `smoke_alarm` | `smoke`, `co_detected` (true at a warning or an alarm; they raise homeCore's critical smoke and carbon monoxide alerts), `smoke_level`, `co_level`, and out of the way `hardware_fault`, `end_of_service`, `muted`, `test_in_progress` | action `self_test` |
+| Air quality sensors | `air_quality_sensor` | `air_quality` (good … extremely_poor), `pm25_ugm3`, `pm10_ugm3`, `co2`, and temperature and humidity when it has them | |
 | Buttons and remotes (Generic Switch): one device per remote, button 1, 2, … in order | `remote` | `button_N` (press, hold, release), and `pushed`, `held`, `released`, `double_tapped` holding the button's number for an instant, as automations' button triggers read; `last_button` | |
 | Anything else | `matter` | what its clusters above report | |
 

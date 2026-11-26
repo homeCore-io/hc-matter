@@ -560,6 +560,90 @@ const co2: Trait = {
   state: ({ v }) => ({ co2: co2Ppm(v.get(Cluster.CarbonDioxideConcentrationMeasurement, 0), v.get(Cluster.CarbonDioxideConcentrationMeasurement, 8)) }),
 };
 
+const ALARM_LEVELS = ["normal", "warning", "critical"];
+
+/**
+ * A smoke and CO alarm. `smoke` and `co_detected` are homeCore's names, and
+ * raise its critical alerts: true at a warning as well as an alarm, since a
+ * warning is smoke or CO there now. The level itself is kept beside them.
+ */
+const smokeCo: Trait = {
+  applies: ({ v }) => v.has(Cluster.SmokeCoAlarm),
+  schema({ v }) {
+    const f = v.features(Cluster.SmokeCoAlarm);
+    const attributes: Record<string, AttrSchema> = {
+      hardware_fault: reading("bool", { display_name: "Hardware fault", category: "diagnostic" }),
+      end_of_service: reading("bool", { display_name: "Needs replacing", category: "diagnostic" }),
+      muted: reading("bool", { display_name: "Muted", category: "diagnostic" }),
+      test_in_progress: reading("bool", { display_name: "Testing", category: "diagnostic" }),
+    };
+    const levels = { options: ALARM_LEVELS.map((value) => ({ value })) };
+    if (f & 1) {
+      attributes.smoke = reading("bool", { states: { when_true: { label: "Smoke" }, when_false: { label: "Clear" } } });
+      attributes.smoke_level = reading("enum", { display_name: "Smoke level", ...levels });
+    }
+    if (f & 2) {
+      attributes.co_detected = reading("bool", { display_name: "Carbon monoxide", states: { when_true: { label: "CO detected" }, when_false: { label: "Clear" } } });
+      attributes.co_level = reading("enum", { display_name: "CO level", ...levels });
+    }
+    if (v.find(Cluster.PowerSource) === null) attributes.battery_low = reading("bool", { display_name: "Battery low", category: "diagnostic" });
+    return {
+      attributes,
+      actions: [{ id: "self_test", label: "Test the alarm", description: "Sound the alarm's own test.", sentence: "test {device}" }],
+    };
+  },
+  state({ v }) {
+    const f = v.features(Cluster.SmokeCoAlarm);
+    const at = (a: number) => num(v.get(Cluster.SmokeCoAlarm, a));
+    const level = (x: number | null) => (x === null ? null : (ALARM_LEVELS[x] ?? null));
+    const flag = (x: number | null) => (x === null ? null : x !== 0);
+    const s: Record<string, unknown> = {
+      hardware_fault: bool(v.get(Cluster.SmokeCoAlarm, 6)),
+      end_of_service: flag(at(7)),
+      muted: flag(at(4)),
+      test_in_progress: bool(v.get(Cluster.SmokeCoAlarm, 5)),
+    };
+    if (f & 1) Object.assign(s, { smoke: flag(at(1)), smoke_level: level(at(1)) });
+    if (f & 2) Object.assign(s, { co_detected: flag(at(2)), co_level: level(at(2)) });
+    if (v.find(Cluster.PowerSource) === null) s.battery_low = flag(at(3));
+    return s;
+  },
+  actions: ["self_test"],
+  command({ v }, p, ops) {
+    if (p.action === "self_test") ops.push({ op: "command", endpoint: v.endpoint, cluster: Cluster.SmokeCoAlarm, command: "selfTestRequest" });
+  },
+};
+
+const AIR_QUALITY = [null, "good", "fair", "moderate", "poor", "very_poor", "extremely_poor"];
+
+/** A particulate reading in µg/m³, from whichever unit the sensor measures in (MeasurementUnit). */
+export function particulateUgm3(value: unknown, unit: unknown): number | null {
+  const v = num(value);
+  if (v === null) return null;
+  // 3 mg/m³, 4 µg/m³, 5 ng/m³; counts and parts per … aren't a mass.
+  const per: Record<number, number> = { 3: 1000, 4: 1, 5: 1e-3 };
+  const u = num(unit) ?? 4;
+  return per[u] === undefined ? null : Math.round(v * per[u] * 10) / 10;
+}
+
+const airQuality: Trait = {
+  applies: ({ v }) => v.has(Cluster.AirQuality) || v.has(Cluster.Pm25ConcentrationMeasurement) || v.has(Cluster.Pm10ConcentrationMeasurement),
+  schema({ v }) {
+    const attributes: Record<string, AttrSchema> = {};
+    if (v.has(Cluster.AirQuality)) attributes.air_quality = reading("enum", { display_name: "Air quality", options: AIR_QUALITY.filter(Boolean).map((value) => ({ value: value! })) });
+    if (v.has(Cluster.Pm25ConcentrationMeasurement)) attributes.pm25_ugm3 = reading("float", { unit: "µg/m³", display_name: "PM2.5" });
+    if (v.has(Cluster.Pm10ConcentrationMeasurement)) attributes.pm10_ugm3 = reading("float", { unit: "µg/m³", display_name: "PM10" });
+    return { attributes };
+  },
+  state({ v }) {
+    const s: Record<string, unknown> = {};
+    if (v.has(Cluster.AirQuality)) s.air_quality = AIR_QUALITY[num(v.get(Cluster.AirQuality, 0)) ?? 0] ?? null;
+    if (v.has(Cluster.Pm25ConcentrationMeasurement)) s.pm25_ugm3 = particulateUgm3(v.get(Cluster.Pm25ConcentrationMeasurement, 0), v.get(Cluster.Pm25ConcentrationMeasurement, 8));
+    if (v.has(Cluster.Pm10ConcentrationMeasurement)) s.pm10_ugm3 = particulateUgm3(v.get(Cluster.Pm10ConcentrationMeasurement, 0), v.get(Cluster.Pm10ConcentrationMeasurement, 8));
+    return s;
+  },
+};
+
 const SWITCH_LATCHING = 1 << 0;
 
 /**
@@ -725,7 +809,7 @@ const TRAITS: Trait[] = [
   measurement(Cluster.IlluminanceMeasurement, "illuminance", "lux", illuminanceToLux),
   measurement(Cluster.PressureMeasurement, "pressure", "hPa", num),
   co2,
-  occupancy, booleanState, battery, electrical, identify, remote,
+  occupancy, booleanState, battery, electrical, identify, remote, smokeCo, airQuality,
 ];
 
 /** Clusters some trait reads, so the rest can be listed as not mapped. */
@@ -735,7 +819,8 @@ const MAPPED = new Set<number>([
   Cluster.ElectricalEnergyMeasurement, Cluster.DoorLock, Cluster.WindowCovering, Cluster.Thermostat,
   Cluster.FanControl, Cluster.ColorControl, Cluster.IlluminanceMeasurement, Cluster.TemperatureMeasurement,
   Cluster.PressureMeasurement, Cluster.RelativeHumidityMeasurement, Cluster.OccupancySensing,
-  Cluster.CarbonDioxideConcentrationMeasurement, Cluster.Switch,
+  Cluster.CarbonDioxideConcentrationMeasurement, Cluster.Switch, Cluster.SmokeCoAlarm, Cluster.AirQuality,
+  Cluster.Pm25ConcentrationMeasurement, Cluster.Pm10ConcentrationMeasurement,
   // Plumbing every device has, which says nothing about what it does.
   4 /* Groups */, 5 /* Scenes */, 30 /* Binding */, 98 /* ScenesManagement */,
 ]);
@@ -819,7 +904,7 @@ const KIND_WORD: Record<string, string> = {
   light: "light", switch: "switch", lock: "lock", cover: "cover", thermostat: "thermostat", fan: "fan",
   contact_sensor: "contact", occupancy_sensor: "occupancy", temperature_sensor: "temperature",
   humidity_sensor: "humidity", light_sensor: "light level", pressure_sensor: "pressure",
-  water_sensor: "leak", rain_sensor: "rain", air_quality_sensor: "air quality", remote: "remote",
+  water_sensor: "leak", rain_sensor: "rain", air_quality_sensor: "air quality", remote: "remote", smoke_alarm: "alarm",
 };
 
 /** Every device a node has, with its schema. */

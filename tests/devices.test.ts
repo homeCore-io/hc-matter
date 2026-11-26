@@ -285,3 +285,47 @@ describe("remotes", () => {
     expect(buttonPatches(d, 1, 0, { newPosition: 1 })).toEqual([{ button_1: 1, last_button: 1 }]);
   });
 });
+
+describe("smoke and CO alarms, and air quality", () => {
+  const alarm = (extra: Record<string, unknown>): NodeData => ({
+    node_id: 8, available: true, is_bridge: false,
+    attributes: {
+      "0/40/3": "Hall alarm",
+      "1/29/0": [{ "0": 0x0076, "1": 1 }], "1/29/1": [29, 92], "1/92/65532": 3,
+      "1/92/1": 0, "1/92/2": 0, "1/92/3": 0, "1/92/4": 0, "1/92/5": false, "1/92/6": false, "1/92/7": 0,
+      ...extra,
+    },
+  });
+
+  it("report smoke and CO in homeCore's names, which raise its critical alerts", () => {
+    const n = alarm({ "1/92/1": 2, "1/92/2": 1 });
+    const [d] = devicesOf(n);
+    expect(d.kind).toBe("smoke_alarm");
+    expect(stateOf(n, d)).toMatchObject({ smoke: true, smoke_level: "critical", co_detected: true, co_level: "warning", battery_low: false });
+    expect(stateOf(alarm({}), d)).toMatchObject({ smoke: false, co_detected: false });
+    expect(commandFor(n, d, { action: "self_test" }).ops).toEqual([{ op: "command", endpoint: 1, cluster: 92, command: "selfTestRequest" }]);
+  });
+
+  it("only say what the alarm has: a smoke-only alarm has no CO", () => {
+    const n = alarm({ "1/92/65532": 1 });
+    const [d] = devicesOf(n);
+    expect(d.schema.attributes.co_detected).toBeUndefined();
+    expect(stateOf(n, d)).not.toHaveProperty("co_detected");
+  });
+
+  it("read air quality and particulates in µg/m³, whatever unit the sensor uses", async () => {
+    const { particulateUgm3 } = await import("../src/devices.js");
+    const n: NodeData = {
+      node_id: 9, available: true, is_bridge: false,
+      attributes: {
+        "0/40/3": "Air monitor", "1/29/0": [{ "0": 0x002c, "1": 1 }], "1/29/1": [29, 91, 1066],
+        "1/91/0": 3, "1/1066/0": 0.012, "1/1066/8": 3,
+      },
+    };
+    const [d] = devicesOf(n);
+    expect(stateOf(n, d)).toMatchObject({ air_quality: "moderate", pm25_ugm3: 12 });
+    expect(particulateUgm3(12, 4)).toBe(12);
+    expect(particulateUgm3(12000, 5)).toBe(12);
+    expect(particulateUgm3(5, 0)).toBeNull();
+  });
+});

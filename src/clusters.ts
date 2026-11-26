@@ -25,6 +25,10 @@ export const Cluster = {
   RelativeHumidityMeasurement: 1029,
   OccupancySensing: 1030,
   CarbonDioxideConcentrationMeasurement: 1037,
+  AirQuality: 91,
+  SmokeCoAlarm: 92,
+  Pm25ConcentrationMeasurement: 1066,
+  Pm10ConcentrationMeasurement: 1069,
 } as const;
 
 /** Global attributes every cluster has. */
@@ -111,6 +115,7 @@ export const DeviceTypes: Record<number, DeviceTypeInfo> = {
   0x0044: { name: "Rain Sensor", kind: "rain_sensor" },
   0x002c: { name: "Air Quality Sensor", kind: "air_quality_sensor" },
   0x000f: { name: "Generic Switch", kind: "remote" },
+  0x0076: { name: "Smoke CO Alarm", kind: "smoke_alarm" },
 };
 
 export function deviceTypeName(id: number): string {
