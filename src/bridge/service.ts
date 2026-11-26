@@ -2,7 +2,8 @@
 // devices as they are now (home.ts), and the matter.js bridge (bridge.ts),
 // which is loaded only once the bridge is turned on.
 
-import { Action } from "homecore-plugin-sdk";
+import { Action, RequiresRole } from "homecore-plugin-sdk";
+import { rmSync } from "node:fs";
 import type { Log } from "../server.js";
 import type { MatterBridge } from "./bridge.js";
 import { HomeLink } from "./home.js";
@@ -14,11 +15,13 @@ export const BRIDGE_SCOPES = ["devices:read", "devices:command"];
 export const BRIDGE_ACTIONS = [
   new Action({
     id: "bridge_status",
+    requiresRole: RequiresRole.ADMIN,
     label: "Matter bridge status",
     description: "Whether homeCore's Matter bridge is on, its pairing code, and the apps it is paired with.",
   }),
   new Action({
     id: "bridge_enable",
+    requiresRole: RequiresRole.ADMIN,
     label: "Turn the Matter bridge on or off",
     description: "Show shared homeCore devices to Apple Home, Google Home, Alexa or another Matter app, through one bridge they pair.",
     params: { type: "object", required: ["on"], properties: { on: { type: "boolean", title: "On" } } },
@@ -31,6 +34,7 @@ export const BRIDGE_ACTIONS = [
   }),
   new Action({
     id: "bridge_share",
+    requiresRole: RequiresRole.ADMIN,
     label: "Share a device through the bridge",
     description: "Show a homeCore device to the apps the bridge is paired with, or stop. A lock or a garage door needs confirm_security: the other app's users and its voice assistant could then unlock or open it.",
     params: {
@@ -46,6 +50,7 @@ export const BRIDGE_ACTIONS = [
   }),
   new Action({
     id: "bridge_reset",
+    requiresRole: RequiresRole.ADMIN,
     label: "Reset the Matter bridge",
     description: "Unpair the bridge from every app and give it a new pairing code. The devices it shares stay chosen.",
     timeoutMs: 60_000,
@@ -105,13 +110,19 @@ export class BridgeService {
   private bridge: MatterBridge | null = null;
   private access: { url: string; key: string } | null = null;
   private synced = false;
+  /** Why the bridge isn't running when it should be, for the page and the notices. */
+  problem: string | null = null;
+  /** Start, on, off and reset, one at a time: two at once could leave two bridges. */
+  private queue: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly dataDir: string,
     private readonly pluginId: string,
     private readonly log: Log,
+    /** Something the plugin's notices show changed. */
+    private readonly changed: () => void = () => {},
   ) {
-    this.store = new BridgeStore(`${dataDir}/bridge.json`);
+    this.store = new BridgeStore(`${dataDir}/bridge.json`, (msg) => log("warn", `bridge: ${msg}`));
     this.home = new HomeLink(log, {
       onSnapshot: (list) => void this.onSnapshot(list),
       onState: (id, current) => {
@@ -140,9 +151,18 @@ export class BridgeService {
     return this.store.get().enabled;
   }
 
+  /** Run one lifecycle step after the others. */
+  private serial<T>(f: () => Promise<T>): Promise<T> {
+    const next = this.queue.then(f, f);
+    this.queue = next.catch(() => {});
+    return next;
+  }
+
   /** At start: run the bridge if it was on. */
-  async start(): Promise<void> {
-    if (this.enabled) await this.run();
+  start(): Promise<void> {
+    return this.serial(async () => {
+      if (this.enabled) await this.run();
+    });
   }
 
   async stop(): Promise<void> {
@@ -157,13 +177,22 @@ export class BridgeService {
   }
 
   private async run(): Promise<void> {
-    if (!this.bridge) {
-      const { MatterBridge } = await import("./bridge.js");
-      const c = this.store.get();
-      this.bridge = new MatterBridge(`${this.dataDir}/bridge`, { passcode: c.passcode, discriminator: c.discriminator }, this.log,
-        (id, body) => this.home.command(id, body));
+    try {
+      if (!this.bridge) {
+        const { MatterBridge } = await import("./bridge.js");
+        const c = this.store.get();
+        this.bridge = new MatterBridge(`${this.dataDir}/bridge`, { passcode: c.passcode, discriminator: c.discriminator }, this.log,
+          (id, body) => this.home.command(id, body));
+      }
+      await this.bridge.start();
+      this.problem = null;
+    } catch (e) {
+      this.problem = `The Matter bridge could not start: ${describe(e)}`;
+      this.log("error", `bridge: ${this.problem}`);
+      throw e;
+    } finally {
+      this.changed();
     }
-    await this.bridge.start();
     if (this.access) this.home.setAccess(this.access.url, this.access.key);
   }
 
@@ -214,35 +243,44 @@ export class BridgeService {
     switch (id) {
       case "bridge_status":
         return this.status();
-      case "bridge_enable": {
-        const on = params.on === true;
-        this.store.setEnabled(on);
-        if (on) await this.run();
-        else {
-          this.home.pause();
-          await this.bridge?.stop();
-          this.bridge = null;
-        }
-        this.log("info", `bridge turned ${on ? "on" : "off"} by ${who}`);
-        return this.status();
-      }
+      case "bridge_enable":
+        return this.serial(async () => {
+          const on = params.on === true;
+          this.store.setEnabled(on);
+          if (on) await this.run();
+          else {
+            this.home.pause();
+            await this.bridge?.stop();
+            this.bridge = null;
+            this.problem = null;
+            this.changed();
+          }
+          this.log("info", `bridge turned ${on ? "on" : "off"} by ${who}`);
+          return this.status();
+        });
       case "bridge_devices":
         if (!this.enabled) return { devices: [], note: "Turn the bridge on to choose devices." };
         if (!this.synced) return { devices: [], note: "Still reading homeCore's devices." };
         return { devices: candidates(this.devices.values(), new Set(Object.keys(this.store.get().devices)), this.pluginId) };
       case "bridge_share":
         return this.share(String(params.device_id ?? ""), params.shared === true, params.confirm_security === true, who);
-      case "bridge_reset": {
-        this.store.reset();
-        const c = this.store.get();
-        if (this.bridge) {
-          await this.bridge.reset({ passcode: c.passcode, discriminator: c.discriminator });
+      case "bridge_reset":
+        return this.serial(async () => {
+          this.store.reset();
+          const c = this.store.get();
+          if (this.bridge?.running) {
+            await this.bridge.reset({ passcode: c.passcode, discriminator: c.discriminator });
+          } else {
+            // Not running (off, or failed to start): forget its pairings by
+            // removing what matter.js keeps for it, which no one has open.
+            await this.bridge?.stop();
+            rmSync(`${this.dataDir}/bridge`, { recursive: true, force: true });
+          }
           this.bridge = null;
-        }
-        if (this.enabled) await this.run();
-        this.log("info", `bridge reset by ${who}`);
-        return this.status();
-      }
+          if (this.enabled) await this.run();
+          this.log("info", `bridge reset by ${who}`);
+          return this.status();
+        });
       default:
         return undefined;
     }
@@ -252,6 +290,7 @@ export class BridgeService {
     const info = this.bridge?.info() ?? { running: false, commissioned: false, qr_code: null, manual_code: null, fabrics: [] };
     return {
       enabled: this.enabled,
+      error: this.problem,
       ...info,
       // The code is for pairing the first app; after that, share from that app.
       qr_code: info.commissioned ? null : info.qr_code,

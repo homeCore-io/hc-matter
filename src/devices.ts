@@ -542,6 +542,22 @@ const measurement = (cluster: number, name: string, unit: string, convert: (v: u
   state: ({ v }) => ({ [name]: convert(v.get(cluster, Attr.Measurement.MeasuredValue)) }),
 });
 
+/** CO₂ in ppm, from whichever unit the sensor measures in (MeasurementUnit). */
+export function co2Ppm(value: unknown, unit: unknown): number | null {
+  const v = num(value);
+  if (v === null) return null;
+  // 0 ppm, 1 ppb, 2 ppt; the mass units can't become ppm without more than we know.
+  const per: Record<number, number> = { 0: 1, 1: 1e-3, 2: 1e-6 };
+  const u = num(unit) ?? 0;
+  return per[u] === undefined ? null : Math.round(v * per[u] * 10) / 10;
+}
+
+const co2: Trait = {
+  applies: ({ v }) => v.has(Cluster.CarbonDioxideConcentrationMeasurement),
+  schema: () => ({ attributes: { co2: reading("float", { unit: "ppm" }) } }),
+  state: ({ v }) => ({ co2: co2Ppm(v.get(Cluster.CarbonDioxideConcentrationMeasurement, 0), v.get(Cluster.CarbonDioxideConcentrationMeasurement, 8)) }),
+};
+
 const occupancy: Trait = {
   applies: ({ v }) => v.has(Cluster.OccupancySensing),
   schema: () => ({ attributes: { occupied: reading("bool", { states: { when_true: { label: "Occupied" }, when_false: { label: "Clear" } } }) } }),
@@ -641,7 +657,7 @@ const TRAITS: Trait[] = [
   measurement(Cluster.RelativeHumidityMeasurement, "humidity", "%", hundredths, { min: 0, max: 100 }),
   measurement(Cluster.IlluminanceMeasurement, "illuminance", "lux", illuminanceToLux),
   measurement(Cluster.PressureMeasurement, "pressure", "hPa", num),
-  measurement(Cluster.CarbonDioxideConcentrationMeasurement, "co2", "ppm", num),
+  co2,
   occupancy, booleanState, battery, electrical, identify,
 ];
 
@@ -807,6 +823,12 @@ export function commandFor(node: NodeData, device: Device, payload: Record<strin
   }
   if (ops.length === 0 && ignored.length > 0) {
     return { ops, ignored, error: `${device.name} cannot be set: ${ignored.join(", ")}` };
+  }
+  // Keys a trait claims but can't act on here: brightness on a switch, a fan's
+  // "on" on a thermostat. Nothing to send is a refusal, not a silent success.
+  if (ops.length === 0 && typeof p.action !== "string") {
+    const asked = Object.keys(p).filter((k) => k !== "transition_ms");
+    if (asked.length) return { ops, ignored, error: `${device.name} cannot be set: ${asked.join(", ")}` };
   }
   return { ops, ignored };
 }

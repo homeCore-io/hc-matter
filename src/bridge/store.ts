@@ -27,15 +27,22 @@ export function newPasscode(rand: (lo: number, hi: number) => number = randomInt
 export class BridgeStore {
   private choices: BridgeChoices;
 
-  constructor(private readonly path: string) {
+  constructor(private readonly path: string, private readonly warn: (message: string) => void = () => {}) {
     this.choices = this.load();
   }
 
   private load(): BridgeChoices {
     if (existsSync(this.path)) {
-      const c = JSON.parse(readFileSync(this.path, "utf8")) as Partial<BridgeChoices>;
-      if (typeof c.passcode === "number" && typeof c.discriminator === "number") {
-        return { enabled: !!c.enabled, devices: c.devices ?? {}, passcode: c.passcode, discriminator: c.discriminator };
+      try {
+        const c = JSON.parse(readFileSync(this.path, "utf8")) as Partial<BridgeChoices>;
+        if (typeof c.passcode === "number" && typeof c.discriminator === "number") {
+          return { enabled: !!c.enabled, devices: c.devices ?? {}, passcode: c.passcode, discriminator: c.discriminator };
+        }
+      } catch (e) {
+        // A damaged file must not stop the plugin: keep it for a look, start afresh.
+        const kept = `${this.path}.corrupt-${Date.now()}`;
+        renameSync(this.path, kept);
+        this.warn(`${this.path} could not be read (${(e as Error).message}); kept as ${kept}, starting with the bridge off and nothing shared`);
       }
     }
     const fresh: BridgeChoices = { enabled: false, devices: {}, passcode: newPasscode(), discriminator: randomInt(0, 4096) };

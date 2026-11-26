@@ -301,11 +301,13 @@ class MatterPage extends HTMLElement {
 		if (!head) return;
 		const b = this.#bridge;
 		const busy = this.#bridgeBusy ? 'disabled' : '';
-		if (!b || b.error) {
+		// No answer at all (the request failed), as against a bridge reporting a problem.
+		if (!b || b.enabled === undefined) {
 			head.innerHTML = `<p class="error">${esc(b?.error ?? 'The bridge did not answer.')}</p>`;
 			list.hidden = true;
 			return;
 		}
+		const problem = b.error ? `<p class="error">${esc(b.error)}</p>` : '';
 		if (!b.enabled) {
 			head.innerHTML = `<button class="hc-pill go" data-bridge="on" ${busy}>Turn on</button>`;
 			list.hidden = true;
@@ -313,7 +315,7 @@ class MatterPage extends HTMLElement {
 		}
 		let pairing;
 		if (!b.running) {
-			pairing = '<p class="quiet">Starting…</p>';
+			pairing = b.error ? '' : '<p class="quiet">Starting…</p>';
 		} else if (!b.commissioned && b.qr_code) {
 			pairing = `<div class="share">${qrSvg(b.qr_code, { size: 168 })}<div>
 				<p><strong>Pair homeCore in your other app</strong></p>
@@ -327,7 +329,7 @@ class MatterPage extends HTMLElement {
 				<p class="quiet">To add it to another app too, share "homeCore" from the app it is in (as for any Matter device).</p>`;
 		}
 		const note = b.has_access && !b.following_homecore ? '<p class="quiet">Connecting to homeCore…</p>' : '';
-		head.innerHTML = `${pairing}${note}
+		head.innerHTML = `${problem}${pairing}${note}
 			<div class="hc-row">
 				<span class="quiet">${b.shared} shared</span>
 				<button class="hc-pill danger" data-bridge="reset" ${busy}>Reset</button>
