@@ -40,6 +40,18 @@ declare module "homecore-plugin-sdk" {
 
   export const Concurrency: { SINGLE: string; MULTI: string };
 
+  export const AlertSeverity: { INFO: string; WARNING: string; ERROR: string };
+  export const AlertActionTarget: { DEVICE: string; PLUGIN: string };
+  export class AlertAction {
+    constructor(label: string, id: string, opts?: { target?: string; params?: unknown; confirm?: boolean });
+  }
+  export class PluginAlertKind {
+    constructor(topic: string, label: string, opts?: { description?: string; severity?: string; defaultOn?: boolean });
+  }
+  export class PluginAlert {
+    constructor(topic: string, reason: string, opts?: { key?: string; message?: string; severity?: string; action?: AlertAction });
+  }
+
   export interface PluginOptions { pluginId: string; brokerHost: string; brokerPort: number; password?: string }
 
   export class PluginBase {
@@ -63,6 +75,7 @@ declare module "homecore-plugin-sdk" {
     publishStatePartialForCommand(deviceId: string, patch: object, commandPayload: object, fallbackSource?: string): void;
     publishAvailability(deviceId: string, available: boolean): void;
     publishPluginStatus(status: "active" | "degraded" | "offline"): void;
+    setAlerts(deviceId: string, alerts: PluginAlert[]): void;
     forwardLog(level: string, message: string, fields?: object | null): void;
     onConnect(): void;
     onCommand(deviceId: string, payload: Record<string, unknown>): void;
