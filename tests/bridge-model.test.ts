@@ -197,3 +197,18 @@ describe("fans", () => {
     expect(commandFrom(fan, { cluster: "fanControl", attribute: "percentSetting", value: 26 }, { on: true, speed_pct: 25.5 })).toBeNull();
   });
 });
+
+describe("a damaged bridge.json", () => {
+  it("is set aside, and the plugin starts with the bridge off", async () => {
+    const { writeFileSync, readdirSync, mkdirSync } = await import("node:fs");
+    const dir = mkdtempSync(join(tmpdir(), "hcm-"));
+    mkdirSync(join(dir, "data"));
+    const path = join(dir, "data", "bridge.json");
+    writeFileSync(path, "{ not json");
+    const said: string[] = [];
+    const store = new BridgeStore(path, (m) => said.push(m));
+    expect(store.get()).toMatchObject({ enabled: false, devices: {} });
+    expect(said[0]).toMatch(/could not be read/);
+    expect(readdirSync(join(dir, "data")).some((f) => f.startsWith("bridge.json.corrupt-"))).toBe(true);
+  });
+});

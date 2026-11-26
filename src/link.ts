@@ -38,6 +38,8 @@ export function parseNodeId(id: string | number | bigint): number | bigint {
 
 export class MatterLink {
   client: MatterClient | null = null;
+  /** A connection being made: a second attempt meanwhile would leak one. */
+  private connecting: MatterClient | null = null;
   private retry: NodeJS.Timeout | null = null;
   private backoff = 500;
   private closed = false;
@@ -50,7 +52,7 @@ export class MatterLink {
 
   /** Connect now; on failure, keep trying. */
   connect(): void {
-    if (this.closed || this.client) return;
+    if (this.closed || this.client || this.connecting) return;
     if (this.retry) {
       clearTimeout(this.retry);
       this.retry = null;
@@ -65,6 +67,7 @@ export class MatterLink {
         error: (m: string) => this.log("error", `matter link: ${m}`),
       },
     });
+    this.connecting = client;
     client.addEventListener("connection_lost", () => this.lost(client));
     client.addEventListener("server_shutdown", () => this.lost(client));
     client.addEventListener("nodes_changed", (detail) => {
@@ -75,6 +78,7 @@ export class MatterLink {
     client
       .startListening()
       .then(() => {
+        this.connecting = null;
         if (this.closed) return client.disconnect();
         this.client = client;
         this.backoff = 500;
@@ -83,6 +87,7 @@ export class MatterLink {
         this.events.onNodes(Object.values(client.nodes).map(nodeDataOf));
       })
       .catch((e: Error) => {
+        this.connecting = null;
         this.log("debug", `matter-server is not answering yet: ${e.message}`);
         try {
           client.disconnect();

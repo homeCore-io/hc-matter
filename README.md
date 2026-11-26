@@ -77,7 +77,9 @@ it is, its firmware, and the homeCore devices it became. For each one:
 a device joins when it is paired before it is on any network. A device shared
 from another app needs neither.
 
-Each of these is also a plugin action, for automations, hc-mcp or the API:
+Each of these is also a plugin action, for automations, hc-mcp or the API.
+Everything that pairs or unpairs, opens a device to another app, changes
+firmware or sets network secrets is for admins only (`requires_role: admin`):
 
 | Action | Takes | Answers |
 |---|---|---|
@@ -193,18 +195,19 @@ that a device refuses changes nothing.
 
 ## Settings
 
-In the plugin's config file, under `[matter]`:
+On the plugin's settings form in the app (Controller, Network, Advanced), or
+in its config file under `[matter]`. Saving restarts the plugin.
 
 | Setting | Default | |
 |---|---|---|
 | `fabric_label` | `"homeCore"` | How this controller appears in other apps' lists of what a device is paired with |
-| `log_level` | `"info"` | matter-server's own log level: `debug`, `info`, `warn`, `error` |
+| `log_level` | `"info"` | matter-server's own log level: `debug`, `info`, `warn`, `error`. Its info lines (every exchange with every device) reach the plugin's log at debug |
 | `primary_interface` | | The network interface to use for IPv6 link-local addresses, when the host has several |
 | `allow_test_devices` | `false` | Trust Matter's test certificates (development kits, stand-ins). A certified product never needs it |
 | `dcl_offline` | `false` | Never ask the CSA's Distributed Compliance Ledger about certificates; use only those bundled and stored |
 | `thread_diagnostics` | `true` | Find Thread border routers and read their diagnostics |
 | `firmware_updates` | `true` | Check for device firmware updates |
-| `storage_dir` | `data/matter-server` | Where the fabric is kept |
+| `storage_dir` | `data/matter-server` | Where the fabric is kept. Not on the form: moving it leaves every paired device behind |
 
 ## Developing
 

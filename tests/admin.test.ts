@@ -55,3 +55,13 @@ describe("the actions", () => {
     expect(params("set_thread_dataset").dataset.format).toBe("password");
   });
 });
+
+describe("who may", () => {
+  it("leaves pairing, unpairing, sharing, firmware and network secrets to admins", async () => {
+    const { BRIDGE_ACTIONS } = await import("../src/bridge/service.js");
+    const all = [...ACTIONS, ...BRIDGE_ACTIONS] as unknown as { id: string; requiresRole: string }[];
+    const admin = ["pair", "share_node", "remove_fabric", "reinterview", "update_firmware", "remove_node", "set_wifi",
+      "set_thread_dataset", "bridge_status", "bridge_enable", "bridge_share", "bridge_reset"];
+    for (const a of all) expect(a.requiresRole, a.id).toBe(admin.includes(a.id) ? "admin" : "user");
+  });
+});

@@ -4,7 +4,7 @@
 // Everything here works on matter-server's view of a node; the summaries are
 // pure (tested in tests/admin.test.ts), the actions are thin calls to it.
 
-import { Action, Concurrency } from "homecore-plugin-sdk";
+import { Action, Concurrency, RequiresRole } from "homecore-plugin-sdk";
 import { Attr, Cluster } from "./clusters.js";
 import { availableOf, devicesOf, nodeIdOf, type NodeData } from "./devices.js";
 
@@ -19,9 +19,15 @@ const forNode = (extra: Record<string, unknown> = {}, required: string[] = []) =
   properties: { ...nodeParam, ...extra },
 });
 
+/**
+ * Anything that pairs or unpairs, opens a device to another app, changes its
+ * firmware or sets network secrets is an admin's. Without requiresRole the
+ * SDK's default lets any plugins:write caller do it.
+ */
 export const ACTIONS = [
   new Action({
     id: "pair",
+    requiresRole: RequiresRole.ADMIN,
     label: "Pair a device",
     description: "Pair a Matter device from its setup code: the QR code's text (MT:…) or the 11 or 21 digit code. "
       + "The device must already be on the network: shared from another app (its \"share\" or \"pairing mode\" option), "
@@ -45,6 +51,7 @@ export const ACTIONS = [
   }),
   new Action({
     id: "share_node",
+    requiresRole: RequiresRole.ADMIN,
     label: "Share a device",
     description: "Open a paired device to another app (Apple Home, Google Home, Alexa, another controller) for 15 minutes, and show the code to pair it there with.",
     params: forNode(),
@@ -59,6 +66,7 @@ export const ACTIONS = [
   }),
   new Action({
     id: "remove_fabric",
+    requiresRole: RequiresRole.ADMIN,
     label: "Unshare a device from an app",
     description: "Remove another controller from a device, so that app can no longer reach it. This controller cannot remove itself here; use \"Remove a device\".",
     params: forNode({ fabric_index: { type: "integer", title: "Fabric", minimum: 1, maximum: 254 } }, ["fabric_index"]),
@@ -66,6 +74,7 @@ export const ACTIONS = [
   }),
   new Action({
     id: "reinterview",
+    requiresRole: RequiresRole.ADMIN,
     label: "Read a device again",
     description: "Ask a device again what it is and what it has, after a firmware update changed it.",
     params: forNode(),
@@ -80,6 +89,7 @@ export const ACTIONS = [
   }),
   new Action({
     id: "update_firmware",
+    requiresRole: RequiresRole.ADMIN,
     label: "Update a device's firmware",
     description: "Install a firmware version on a device. The device keeps working while it downloads and restarts at the end.",
     params: forNode({ version: { type: "integer", title: "Software version (its number)" } }, ["version"]),
@@ -87,6 +97,7 @@ export const ACTIONS = [
   }),
   new Action({
     id: "remove_node",
+    requiresRole: RequiresRole.ADMIN,
     label: "Remove a device",
     description: "Remove a paired Matter device from homeCore and from this controller's fabric. Other apps it is shared with keep it.",
     params: forNode(),
@@ -94,6 +105,7 @@ export const ACTIONS = [
   }),
   new Action({
     id: "set_wifi",
+    requiresRole: RequiresRole.ADMIN,
     label: "Wi-Fi for pairing",
     description: "The Wi-Fi network a newly paired Wi-Fi device joins. Only needed for a device that is not on the network yet.",
     params: {
@@ -108,6 +120,7 @@ export const ACTIONS = [
   }),
   new Action({
     id: "set_thread_dataset",
+    requiresRole: RequiresRole.ADMIN,
     label: "Thread network for pairing",
     description: "The Thread network's operational dataset (hex, from your border router) that a newly paired Thread device joins.",
     params: {

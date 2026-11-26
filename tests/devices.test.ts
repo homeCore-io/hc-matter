@@ -220,3 +220,20 @@ describe("a plain node", () => {
     expect(d.schema.attributes.brightness_pct).toBeUndefined();
   });
 });
+
+describe("refinements", () => {
+  it("reads CO₂ in the sensor's own unit", async () => {
+    const { co2Ppm } = await import("../src/devices.js");
+    expect(co2Ppm(612, 0)).toBe(612);
+    expect(co2Ppm(612000, 1)).toBe(612);
+    expect(co2Ppm(612, undefined)).toBe(612);
+    expect(co2Ppm(1.2, 3)).toBeNull();
+  });
+
+  it("refuses a command the device has nothing to do with, rather than doing nothing", () => {
+    const node = fixture();
+    const plug = byName(devicesOf(node), "Kettle Plug");
+    expect(commandFor(node, plug, { brightness_pct: 50 }).error).toMatch(/cannot be set: brightness_pct/);
+    expect(commandFor(node, plug, { transition_ms: 500 }).error).toBeUndefined();
+  });
+});

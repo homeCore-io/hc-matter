@@ -44,6 +44,32 @@ type AnyEndpoint = Endpoint<any>;
 
 const B = BridgedDeviceBasicInformationServer;
 
+/** Open, close and stop from another app, by endpoint id, to the bridge that owns it. */
+const coverActions = new Map<string, (action: "open" | "close" | "stop") => void>();
+
+/**
+ * A cover's server that tells homeCore about open, close and stop. matter.js
+ * moves only a position-aware cover's target, so for one that only opens and
+ * closes, nothing else would ever reach homeCore; and stop moves nothing at all.
+ */
+function coverServer(positioned: boolean): any {
+  const Base: any = positioned ? WindowCoveringServer.with("Lift", "PositionAwareLift") : WindowCoveringServer.with("Lift");
+  return class extends Base {
+    async upOrOpen() {
+      if (!positioned) return coverActions.get(this.endpoint.id)?.("open");
+      return super.upOrOpen();
+    }
+    async downOrClose() {
+      if (!positioned) return coverActions.get(this.endpoint.id)?.("close");
+      return super.downOrClose();
+    }
+    async stopMotion() {
+      coverActions.get(this.endpoint.id)?.("stop");
+      if (positioned) return super.stopMotion();
+    }
+  };
+}
+
 /** Each kind's matter.js device, and the state it must start with. */
 function makeEndpoint(part: BridgePart, name: string, uniqueId: string, reachable: boolean): AnyEndpoint {
   const bridged = { bridgedDeviceBasicInformation: { nodeLabel: name.slice(0, 32), productName: name.slice(0, 32), reachable, uniqueId } };
@@ -61,7 +87,7 @@ function makeEndpoint(part: BridgePart, name: string, uniqueId: string, reachabl
     door_lock: () => new Endpoint(DoorLockDevice.with(B, DoorLockServer),
       { id, ...bridged, doorLock: { lockState: 1, lockType: 0, actuatorEnabled: true, operatingMode: 0 } } as any),
     window_covering: () => new Endpoint(
-      WindowCoveringDevice.with(B, part.positioned ? WindowCoveringServer.with("Lift", "PositionAwareLift") : WindowCoveringServer.with("Lift")),
+      WindowCoveringDevice.with(B, coverServer(!!part.positioned)),
       { id, ...bridged, windowCovering: part.positioned
         ? { type: 0, endProductType: 0, currentPositionLiftPercent100ths: 0, targetPositionLiftPercent100ths: 0 }
         : { type: 0, endProductType: 0 } } as any),
@@ -69,12 +95,12 @@ function makeEndpoint(part: BridgePart, name: string, uniqueId: string, reachabl
     occupancy_sensor: () => new Endpoint(OccupancySensorDevice.with(B, OccupancySensingServer.with("PassiveInfrared")),
       { id, ...bridged, occupancySensing: { occupancy: { occupied: false }, occupancySensorType: 0, occupancySensorTypeBitmap: { pir: true } } } as any),
     temperature_sensor: () => new Endpoint(TemperatureSensorDevice.with(B),
-      { id, ...bridged, temperatureMeasurement: { measuredValue: null, minMeasuredValue: -5000, maxMeasuredValue: 10000 } } as any),
+      { id, ...bridged, temperatureMeasurement: { measuredValue: null, minMeasuredValue: null, maxMeasuredValue: null } } as any),
     humidity_sensor: () => new Endpoint(HumiditySensorDevice.with(B),
       { id, ...bridged, relativeHumidityMeasurement: { measuredValue: null, minMeasuredValue: 0, maxMeasuredValue: 10000 } } as any),
     water_leak: () => new Endpoint(WaterLeakDetectorDevice.with(B), { id, ...bridged, booleanState: { stateValue: false } } as any),
     light_sensor: () => new Endpoint(LightSensorDevice.with(B),
-      { id, ...bridged, illuminanceMeasurement: { measuredValue: null, minMeasuredValue: 1, maxMeasuredValue: 0xfffe } } as any),
+      { id, ...bridged, illuminanceMeasurement: { measuredValue: null, minMeasuredValue: null, maxMeasuredValue: null } } as any),
     thermostat: () => thermostatEndpoint(part, id, bridged),
     fan: () => new Endpoint(FanDevice.with(B, FanControlServer),
       { id, ...bridged, fanControl: { fanMode: 0, fanModeSequence: 0, percentSetting: 0, percentCurrent: 0 } } as any),
@@ -128,6 +154,10 @@ interface Shared {
   timer: NodeJS.Timeout | null;
   /** Puts homeCore's state back after a change it can't take. */
   resync: NodeJS.Timeout | null;
+  /** On the bridge already (a share during start must not add it twice). */
+  added: boolean;
+  /** Setting homeCore's state into it now: the changes that causes are not another app's. */
+  applying: number;
   /** Colour arrives as two attributes; kept until both are known. */
   xy: { x?: unknown; y?: unknown };
 }
@@ -170,8 +200,8 @@ export class MatterBridge {
     Environment.default.vars.set("path.root", this.storageDir);
     // Warnings and worse only. matter.js prints the pairing passcode at
     // notice when the bridge starts unpaired, and whoever has that can pair
-    // the bridge and command everything shared, locks included. The page
-    // shows the code to admins; the log must not.
+    // the bridge and command everything shared, locks included. Only
+    // bridge_status, an admin's action, hands it out; the log must not.
     Logger.level = "warn";
     const node = await ServerNode.create({
       id: "homecore-bridge",
@@ -188,13 +218,35 @@ export class MatterBridge {
         serialNumber: "homecore-bridge",
       },
     } as any);
-    const aggregator = new Endpoint(AggregatorEndpoint, { id: "devices" });
-    await node.add(aggregator);
-    this.node = node;
-    this.aggregator = aggregator;
-    for (const s of this.shared.values()) await this.addParts(s);
-    await node.start();
-    this.log("info", `bridge: running on port ${BRIDGE_PORT}, ${this.shared.size} device(s) shared`);
+    try {
+      const aggregator = new Endpoint(AggregatorEndpoint, { id: "devices" });
+      await node.add(aggregator);
+      this.aggregator = aggregator;
+      for (const s of [...this.shared.values()]) {
+        try {
+          await this.addParts(s);
+        } catch (e) {
+          // One device matter.js refuses must not keep the rest off the bridge.
+          this.log("warn", `bridge: left ${homeName(s.device)} off: ${(e as Error).message}`);
+        }
+      }
+      await node.start();
+      // Only now is it running: a failed start leaves nothing half-made.
+      this.node = node;
+      this.log("info", `bridge: running on port ${BRIDGE_PORT}, ${this.shared.size} device(s) shared`);
+    } catch (e) {
+      this.aggregator = null;
+      for (const s of this.shared.values()) {
+        s.added = false;
+        for (const p of s.parts) p.endpoint = null as unknown as AnyEndpoint;
+      }
+      try {
+        await node.close();
+      } catch {
+        // already closed
+      }
+      throw e;
+    }
   }
 
   async stop(): Promise<void> {
@@ -205,7 +257,8 @@ export class MatterBridge {
     for (const s of this.shared.values()) {
       if (s.timer) clearTimeout(s.timer);
       if (s.resync) clearTimeout(s.resync);
-      s.parts = [];
+      s.added = false;
+      for (const p of s.parts) p.endpoint = null as unknown as AnyEndpoint;
     }
     if (node) {
       try {
@@ -246,14 +299,24 @@ export class MatterBridge {
   /** Share a device (or update what it is), with these parts. */
   async share(device: HomeDevice, parts: BridgePart[]): Promise<void> {
     const before = this.shared.get(device.device_id);
-    const same = before && JSON.stringify(before.parts.map((p) => p.part)) === JSON.stringify(parts) && homeName(before.device) === homeName(device);
-    if (before && same) {
+    const sameParts = before && JSON.stringify(before.parts.map((p) => p.part)) === JSON.stringify(parts);
+    if (before && sameParts) {
+      const renamed = homeName(before.device) !== homeName(device);
       before.device = device;
+      // A rename is a new label on the same endpoint: re-creating it would
+      // make the other app forget its room, scenes and automations for it.
+      if (renamed) {
+        for (const { part, endpoint } of before.parts) {
+          if (!endpoint) continue;
+          const label = `${homeName(device)}${part.key.endsWith("_rh") ? " humidity" : ""}`.slice(0, 32);
+          await this.safeSet(endpoint, { bridgedDeviceBasicInformation: { nodeLabel: label } }, device.device_id);
+        }
+      }
       await this.applyState(before);
       return;
     }
     if (before) await this.unshare(device.device_id);
-    const s: Shared = { device, parts: parts.map((part) => ({ part, endpoint: null as unknown as AnyEndpoint })), pending: {}, timer: null, resync: null, xy: {} };
+    const s: Shared = { device, parts: parts.map((part) => ({ part, endpoint: null as unknown as AnyEndpoint })), pending: {}, timer: null, resync: null, added: false, applying: 0, xy: {} };
     this.shared.set(device.device_id, s);
     if (this.aggregator) await this.addParts(s);
   }
@@ -264,6 +327,7 @@ export class MatterBridge {
     this.shared.delete(deviceId);
     if (s.timer) clearTimeout(s.timer);
     if (s.resync) clearTimeout(s.resync);
+    for (const { part } of s.parts) coverActions.delete(part.key);
     for (const { endpoint } of s.parts) {
       try {
         if (endpoint) await endpoint.delete();
@@ -278,9 +342,12 @@ export class MatterBridge {
   }
 
   private async addParts(s: Shared): Promise<void> {
+    if (s.added) return;
+    s.added = true;
     try {
       for (const p of s.parts) {
         const suffix = p.part.key.endsWith("_rh") ? " humidity" : "";
+        if (p.part.kind === "window_covering") coverActions.set(p.part.key, (action) => this.queue(s, { action }));
         p.endpoint = makeEndpoint(p.part, `${homeName(s.device)}${suffix}`, uniqueIdFor(p.part.key), s.device.available !== false);
         await this.aggregator!.add(p.endpoint);
         this.watch(s, p.part, p.endpoint);
@@ -307,6 +374,8 @@ export class MatterBridge {
   }
 
   private changed(s: Shared, part: BridgePart, cluster: string, attribute: string, value: unknown): void {
+    // The bridge setting homeCore's own state: not a change another app made.
+    if (s.applying > 0) return;
     // homeCore's state as it will be once what is waiting is sent: "on, then
     // 50 %" from one app is one change, and the level must not be dropped
     // because homeCore hasn't heard the "on" yet.
@@ -324,6 +393,17 @@ export class MatterBridge {
       // for a reflection that changes nothing.
       else this.resyncSoon(s);
     }
+    this.flushSoon(s);
+  }
+
+  /** A command from another app, as the device's own words (a cover's open, close or stop). */
+  private queue(s: Shared, cmd: Record<string, unknown>): void {
+    if (this.shared.get(s.device.device_id) !== s) return;
+    Object.assign(s.pending, cmd);
+    this.flushSoon(s);
+  }
+
+  private flushSoon(s: Shared): void {
     if (Object.keys(s.pending).length === 0) return;
     if (s.timer) clearTimeout(s.timer);
     s.timer = setTimeout(() => {
@@ -331,7 +411,10 @@ export class MatterBridge {
       const body = s.pending;
       s.pending = {};
       this.log("info", `bridge: another app set ${homeName(s.device)}: ${JSON.stringify(body)}`);
-      this.send(s.device.device_id, body).catch((e) => this.log("warn", `bridge: ${homeName(s.device)} refused ${JSON.stringify(body)}: ${(e as Error).message}`));
+      this.send(s.device.device_id, body)
+        .catch((e) => this.log("warn", `bridge: ${homeName(s.device)} refused ${JSON.stringify(body)}: ${(e as Error).message}`))
+        // Whatever homeCore made of it, show that.
+        .finally(() => this.resyncSoon(s));
     }, SETTLE_MS);
   }
 
@@ -361,18 +444,29 @@ export class MatterBridge {
   }
 
   private async applyState(s: Shared): Promise<void> {
-    for (const { part, endpoint } of s.parts) {
-      if (!endpoint) continue;
-      const state = clusterState(part, s.device.attributes);
-      if (Object.keys(state).length) await this.safeSet(endpoint, state, s.device.device_id);
+    // Another app's change is waiting to be sent: homeCore's state from before
+    // it would undo what that app shows. It is shown once the change is sent.
+    if (s.timer) return;
+    s.applying += 1;
+    try {
+      for (const { part, endpoint } of s.parts) {
+        if (!endpoint) continue;
+        const state = clusterState(part, s.device.attributes);
+        if (Object.keys(state).length) await this.safeSet(endpoint, state, s.device.device_id);
+      }
+    } finally {
+      s.applying -= 1;
     }
   }
 
+  /** One cluster at a time: a value matter.js refuses spoils only its own cluster, and says so. */
   private async safeSet(endpoint: AnyEndpoint, state: Record<string, unknown>, deviceId: string): Promise<void> {
-    try {
-      await endpoint.set(state as any);
-    } catch (e) {
-      this.log("debug", `bridge: could not show ${deviceId}'s state: ${(e as Error).message}`);
+    for (const [cluster, values] of Object.entries(state)) {
+      try {
+        await endpoint.set({ [cluster]: values } as any);
+      } catch (e) {
+        this.log("warn", `bridge: could not show ${deviceId}'s ${cluster} ${JSON.stringify(values)}: ${(e as Error).message}`);
+      }
     }
   }
 }

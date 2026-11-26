@@ -15,6 +15,7 @@ import { MatterLink, nodeDataOf, parseNodeId } from "./link.js";
 import { ACTIONS, SHARE_WINDOW_SECS, ownFabricIndex, summarize, summarizeFabrics } from "./admin.js";
 import { FIRMWARE_ALERT, FirmwareWatch, firmwareAlert, type FoundUpdate } from "./firmware.js";
 import { BRIDGE_ACTIONS, BRIDGE_SCOPES, BridgeService } from "./bridge/service.js";
+import { CONFIG_DESCRIPTOR, CONFIG_SCHEMA } from "./settings.js";
 import { MatterServerProcess, type Log, type LogLevel } from "./server.js";
 
 /** State that follows a command within this long is reported as its result. */
@@ -51,7 +52,7 @@ export class MatterPlugin extends PluginBase {
       password: config.homecore.password,
     });
     const log: Log = (level, message) => this.log(level, message);
-    this.bridge = new BridgeService(dirname(config.matter.storageDir), config.homecore.pluginId, log);
+    this.bridge = new BridgeService(dirname(config.matter.storageDir), config.homecore.pluginId, log, () => this.refreshNotices());
     this.server = new MatterServerProcess(config.matter, log, {
       onReady: () => {
         this.serverProblem = null;
@@ -107,10 +108,20 @@ export class MatterPlugin extends PluginBase {
       alertKinds: [FIRMWARE_ALERT],
       // The bridge reads homeCore's devices and commands them for other apps.
       apiScopes: BRIDGE_SCOPES,
+      // The settings form; homeCore writes what it saves to its own copy of
+      // the config, and the runtime restarts the plugin on it.
+      configSchema: CONFIG_SCHEMA,
+      configDescriptor: CONFIG_DESCRIPTOR,
     }) });
     this.publishPluginStatus("active");
     // A reconnect: say every device again (core may have restarted).
     for (const d of this.devices.values()) this.announce(d, true);
+    // The node list may have arrived before the broker connection: what
+    // onNodes skipped without MQTT happens now.
+    if (this.synced) {
+      this.reconcileDevices(new Set(this.devices.keys()));
+      for (const id of this.updates.keys()) this.refreshFirmwareAlert(id);
+    }
     this.refreshNotices();
   }
 
@@ -225,7 +236,9 @@ export class MatterPlugin extends PluginBase {
       // A changed descriptor means the node's shape changed (a bridge added a device).
       // Its software version changed: an update was installed.
       if (detail.attributeKey === "0/40/9") this.refreshFirmwareAlert(nodeId);
-      if (/^\d+\/29\//.test(detail.attributeKey)) {
+      // Its shape changed: a bridge added a device (Descriptor), or what it is
+      // called, can do (FeatureMap) or ranges over (colour limits).
+      if (/^\d+\/29\/|\/65532$|^0\/40\/5$|^\d+\/57\/5$|^\d+\/768\/1639[56]$/.test(detail.attributeKey)) {
         this.syncNode(node);
         return;
       }
@@ -263,6 +276,11 @@ export class MatterPlugin extends PluginBase {
         remedy: "Check they have power and are on the network. Thread devices also need a Thread border router.",
       }));
     }
+    if (this.bridge?.problem) {
+      notices.push(PluginNotice.error("bridge_failing", this.bridge.problem, {
+        remedy: "Check the plugin's log. Port 5541 must be free on the runtime's host; turning the bridge off and on again retries.",
+      }));
+    }
     if (this.config.matter.allowTestDevices) {
       notices.push(PluginNotice.info("test_devices_allowed", "Test devices are allowed (allow_test_devices): devices with Matter's test certificates can be paired."));
     }
@@ -289,7 +307,9 @@ export class MatterPlugin extends PluginBase {
       for (const op of plan.ops) await this.send(client, node.node_id, op);
     } catch (e) {
       this.log("warn", `${d.name} (${deviceId}) refused ${JSON.stringify(stripMeta(payload))}: ${(e as Error).message}`);
-      // Say again what it is, so nothing shows the change as made.
+      // Say again what it is, so nothing shows the change as made; and the
+      // state that follows is not this command's doing.
+      this.causes.delete(deviceId);
       this.published.delete(deviceId);
       this.publishChanges(d, node);
     }
@@ -334,7 +354,9 @@ export class MatterPlugin extends PluginBase {
       const { client, nodeId, node, text } = this.target(params);
       const index = Number(params.fabric_index);
       if (!Number.isInteger(index)) throw new Error("fabric_index is required");
-      if (index === ownFabricIndex(node)) throw new Error("That is this controller. To take the device out of homeCore, remove the device.");
+      const own = ownFabricIndex(node);
+      if (own === null) throw new Error("This device hasn't said which of its controllers is homeCore yet, so nothing is removed. Read it again and retry.");
+      if (index === own) throw new Error("That is this controller. To take the device out of homeCore, remove the device.");
       this.log("info", `removing fabric ${index} from Matter node ${text} for ${who}`);
       await client.removeMatterFabric(nodeId, index);
       return { removed: index };

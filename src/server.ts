@@ -45,8 +45,10 @@ export type Log = (level: LogLevel, message: string) => void;
 
 /** matter.js log lines: "2026-11-26 14:54:50.482 NOTICE WebServer Webserver listening ...". */
 const LINE = /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+ (\w+) (.*)$/;
+// matter-server's INFO is every exchange with every device: the plugin's
+// debug. NOTICE and up is what someone looking after the house wants.
 const LEVELS: Record<string, LogLevel> = {
-  DEBUG: "debug", INFO: "info", NOTICE: "info", WARN: "warn", WARNING: "warn", ERROR: "error", FATAL: "error", CRITICAL: "error",
+  DEBUG: "debug", INFO: "debug", NOTICE: "info", WARN: "warn", WARNING: "warn", ERROR: "error", FATAL: "error", CRITICAL: "error",
 };
 
 /** A matter-server output line as a level and a message. Continuation lines keep the last level. */
@@ -105,6 +107,18 @@ export class MatterServerProcess {
     this.child = child;
     this.tail = [];
     let ready = false;
+    const becameReady = () => {
+      if (ready || this.child !== child) return;
+      ready = true;
+      clearInterval(watch);
+      this.events.onReady();
+    };
+    // Ready when its socket exists: not from its log, whose "listening" line
+    // is a notice that log_level = "warn" or "error" would filter out.
+    const watch = setInterval(() => {
+      if (existsSync(this.socket)) becameReady();
+    }, 250);
+    child.once("exit", () => clearInterval(watch));
     let level: LogLevel = "info";
     const onLine = (line: string) => {
       if (!line.trim()) return;
@@ -113,10 +127,7 @@ export class MatterServerProcess {
       this.tail.push(line);
       if (this.tail.length > 20) this.tail.shift();
       this.log(parsed.level, `matter-server: ${parsed.message}`);
-      if (!ready && /listening on unix socket/i.test(parsed.message)) {
-        ready = true;
-        this.events.onReady();
-      }
+      if (/listening on unix socket/i.test(parsed.message)) becameReady();
     };
     createInterface({ input: child.stdout! }).on("line", onLine);
     createInterface({ input: child.stderr! }).on("line", onLine);
@@ -138,18 +149,24 @@ export class MatterServerProcess {
     });
   }
 
-  /** Stop it, and wait for it to go (SIGTERM, then SIGKILL after `graceMs`). */
-  async stop(graceMs = 800): Promise<void> {
+  /**
+   * Ask it to stop, and wait up to `waitMs` for it to go. Never SIGKILL: its
+   * SIGTERM handler closes the fabric's storage, and cutting that off
+   * mid-write could lose every pairing. If this process goes first, the
+   * launcher sees its pipe close and stops the server itself.
+   */
+  async stop(waitMs = 800): Promise<void> {
     this.stopping = true;
     if (this.restartTimer) clearTimeout(this.restartTimer);
     const child = this.child;
     if (!child || child.exitCode !== null) return;
     await new Promise<void>((resolve) => {
-      const kill = setTimeout(() => child.kill("SIGKILL"), graceMs);
+      const give = setTimeout(resolve, waitMs);
       child.once("exit", () => {
-        clearTimeout(kill);
+        clearTimeout(give);
         resolve();
       });
+      child.stdin?.end();
       child.kill("SIGTERM");
     });
   }

@@ -39,6 +39,7 @@ declare module "homecore-plugin-sdk" {
   }
 
   export const Concurrency: { SINGLE: string; MULTI: string };
+  export const RequiresRole: { ADMIN: string; USER: string; READ_ONLY: string; SIGNED_IN: string };
 
   export const AlertSeverity: { INFO: string; WARNING: string; ERROR: string };
   export const AlertActionTarget: { DEVICE: string; PLUGIN: string };
